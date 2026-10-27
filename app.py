@@ -494,8 +494,22 @@ def txt(n, label, placeholder="", **kw):
     return F[n]
 
 
-def area(n, label, placeholder="", height=110):
+def area(n, label, placeholder="", height=110, save=False):
     F[n] = st.text_area(label, value=F.get(n) or "", key=wkey(n), placeholder=placeholder, height=height)
+    if save:
+        # On phones/tablets a text box only saves when you tap away from it — this button does that
+        # (tapping it takes the focus off the box), then confirms it's stored.
+        c1, c2 = st.columns([1, 1.6], vertical_alignment="center")
+        with c1:
+            if st.button("Save notes", key=wkey(f"save_{n}"), icon=":material/save:", **FULL):
+                ss[f"_saved_{n}"] = F[n]
+                save_draft()
+        with c2:
+            saved = ss.get(f"_saved_{n}")
+            if F[n].strip() and saved is not None and saved == F[n]:
+                st.markdown(":green[✓ Saved]")
+            elif F[n].strip() and saved is not None:
+                st.caption("Changed since last save")
     return F[n]
 
 
@@ -1348,7 +1362,7 @@ def sheet_screen():
         F["show_fault"] = vt in FAULT_TYPES
         multi("covered", "What did this visit involve?", COVER_OPTIONS)
         if F["show_fault"]:
-            area("fault_reported", "Fault reported", placeholder="What the customer / office reported", height=80)
+            area("fault_reported", "Fault reported", placeholder="What the customer / office reported", height=80, save=True)
             c1, c2 = st.columns(2)
             with c1:
                 pick("fault_category", "Fault category", FAULT_CATEGORIES)
@@ -1357,7 +1371,7 @@ def sheet_screen():
             one("fault_outcome", "Outcome", FAULT_OUTCOMES)
             txt("parts_used", "Parts / equipment used or swapped", placeholder="e.g. replaced T54W handset, PSU")
         area("work_done", "Work carried out / engineer notes",
-             placeholder="What you did on site — the office and customer will see this")
+             placeholder="What you did on site — the office and customer will see this", save=True)
         one("billable", "Billing", BILLING)
 
     covered = F.get("covered") or []
@@ -1471,7 +1485,7 @@ def sheet_screen():
             with c1:
                 one("shown_system", "Customer shown how to use system", ["Yes", "No"])
         one("followup_needed", "Follow-up visit needed?", ["Yes", "No"])
-        area("outstanding", "Outstanding items / issues", placeholder="Anything left to do, ordered, or waiting on", height=80)
+        area("outstanding", "Outstanding items / issues", placeholder="Anything left to do, ordered, or waiting on", height=80, save=True)
         st.file_uploader("Site photos (optional)", type=["jpg", "jpeg", "png", "heic", "webp"],
                          accept_multiple_files=True, key="photos_upload",
                          help="On a phone this opens the camera. Photos go on the PDF and onto the Zoho account.")
