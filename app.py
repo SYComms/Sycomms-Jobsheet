@@ -1145,10 +1145,13 @@ def jobs_screen():
                 chips += chip((f"{job.get('booked_label', 'Consultant')}: " if job.get("consultant") else "") + who)
             title = job["title"] or ""
             cust = (job.get("for_name") or job.get("account_name") or "").strip()
+            person = (job.get("contact_hint") or "").strip()
             if cust and cust.lower() not in title.lower():
-                big, small = cust, title  # customer as the heading, meeting title underneath
+                big, small = cust, title  # company as the heading, meeting title underneath
             else:
                 big, small = title or cust, ""
+            if person and person.lower() not in (big + " " + small).lower():
+                small = f"{small} · Contact: {person}" if small else f"Contact: {person}"
             render_html(f'<div class="job-time">{esc(t)}</div><div class="job-title">{esc(big)}</div>'
                         + (f'<div class="job-cust">{esc(small)}</div>' if small else '<div style="height:8px"></div>')
                         + chips)
