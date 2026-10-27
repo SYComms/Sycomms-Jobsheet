@@ -66,8 +66,7 @@ QUOTE_PLATFORM = "UCM"      # the platform quotes from the quotation tool are so
 PLATFORMS = ["UCM", "Legacy"]
 HANDSET_MAKES = ["Grandstream", "Yealink", "Mix", "Other"]
 HANDSET_TYPES = ["Desk phone", "Cordless", "DECT", "Softphone"]
-SOFTWARE = ["Horizon Collaborate", "Horizon Integrator", "3CX app", "Yealink USB Connect",
-            "Wildix Collaboration", "Microsoft Teams", "Call recording portal"]
+SOFTWARE = ["Mobile softphone", "Call recording portal", "Call Scope", "Wallboard", "Mix"]
 FEATURES = ["Voicemail", "Voicemail to email", "Call groups / hunt groups", "Auto-attendant / IVR",
             "Call recording", "Out-of-hours routing", "Call queues", "Music on hold", "Call Scope"]
 BB_TYPES = ["Full Fibre (FTTP)", "Fibre to cabinet (FTTC)", "SoGEA", "Ethernet leased line", "4G / 5G", "Other"]
@@ -649,10 +648,21 @@ def read_quote(raw: bytes):
             "handset_types": [t for t, on in (("Desk phone", bool(desk)), ("DECT", bool(cord_handsets)),
                                                ("Softphone", bool(soft))) if on],
             "users_number": n_handsets + soft,
-            "software_included": "Yes" if sw else "No",
         })
-        if sw:
-            f["software_name"] = ", ".join(sw)
+        # Map what was sold onto the engineer's software buttons
+        cats = []
+        if soft:
+            cats.append("Mobile softphone")
+        if _qty(snap.get("q_sw_wb")):
+            cats.append("Call recording portal")
+        if any(k.startswith("cs_") and v is True for k, v in snap.items()):
+            cats.append("Call Scope")
+        if _qty(snap.get("wallboard_users_key")) or snap.get("q_wallboard"):
+            cats.append("Wallboard")
+        f["software_included"] = "Yes" if (sw or cats) else "No"
+        if cats:
+            f["software_name"] = cats[0] if len(cats) == 1 else "Mix"
+        if sw or cats:
             f["licence_count"] = soft + _qty(snap.get("q_sw_ctd")) + (1 if snap.get("q_sw_studio") else 0)
         if any(k.startswith("cs_") and v is True for k, v in snap.items()):
             f["features"] = ["Call Scope"]
@@ -1336,11 +1346,8 @@ def sheet_screen():
             txt("handset_other", "Other handset type", placeholder="Optional")
             one("software_included", "Software included?", ["Yes", "No"])
             if F.get("software_included") == "Yes":
-                c1, c2 = st.columns([2, 1])
-                with c1:
-                    pick("software_name", "Software / application", SOFTWARE)
-                with c2:
-                    num("licence_count", "Licence / seat count")
+                one("software_name", "Software / application", SOFTWARE)
+                num("licence_count", "Licence / seat count")
             c1, c2 = st.columns(2)
             with c1:
                 num("users_number", "Number of users")
