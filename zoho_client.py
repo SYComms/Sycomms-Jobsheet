@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 UK = ZoneInfo("Europe/London")
+CODE_VERSION = "2026-10-27.3"  # bump when this file changes
 
 
 class ZohoError(Exception):

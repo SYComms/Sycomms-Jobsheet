@@ -29,7 +29,14 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 from pdf_builder import build_pdf
+import zoho_client as _zc
 from zoho_client import ZohoClient, ZohoError, demo_jobs
+
+CODE_VERSION = getattr(_zc, "CODE_VERSION", "old")
+if CODE_VERSION == "old" or not hasattr(ZohoClient, "is_deals"):
+    st.error("zoho_client.py on GitHub is an older version than app.py. Upload all the files from the "
+             "latest zip (app.py, zoho_client.py and pdf_builder.py), then reboot the app.")
+    st.stop()
 
 UK = ZoneInfo("Europe/London")
 DATA = Path(__file__).parent / "data"
@@ -112,10 +119,18 @@ def engineer_names():
     return names
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
+def _zoho_for(code_version: str, cfg_json: str):
+    return ZohoClient(json.loads(cfg_json))
+
+
 def zoho_client():
+    """One shared Zoho connection, rebuilt automatically whenever the code or the
+    [zoho] Secrets change (so a stale connection can never linger after an update)."""
     cfg = secret("zoho")
-    return ZohoClient(dict(cfg)) if cfg else None
+    if not cfg:
+        return None
+    return _zoho_for(CODE_VERSION, json.dumps(dict(cfg), sort_keys=True, default=str))
 
 
 # =====================================================================
