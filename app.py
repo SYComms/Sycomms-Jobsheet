@@ -940,7 +940,7 @@ def jobs_screen():
         day = st.date_input("Diary date", value=ss.get("day", date.today()), format="DD/MM/YYYY", key="day_pick")
         ss.day = day
     with c2:
-        view = st.segmented_control("Show", ["Day", "Next 7 days"], default=ss.get("view", "Day"),
+        view = st.segmented_control("Show", ["Day", "Next 7 days"], default=ss.get("view", "Next 7 days"),
                                     key="view_t", required=True)
         ss.view = view
     with c3:
