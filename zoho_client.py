@@ -48,9 +48,14 @@ class ZohoClient:
         self.accounts_url = cfg.get("accounts_url", "https://accounts.zoho.eu").rstrip("/")
         self.api_domain = cfg.get("api_domain", "https://www.zohoapis.eu").rstrip("/")
         self.version = cfg.get("api_version", "v6")
-        self.module = cfg.get("appointments_module", "Appointments__s")
+        self.module = cfg.get("appointments_module", "Deals")
         self.engineer_field = cfg.get("engineer_field", "Owner")
         self.completed_status = cfg.get("completed_status", "Completed")
+        # Deals diary (same as the Upgrade Tracker): the date/time field on the Deal,
+        # and the owner email domain that marks SY Comms deals (Deals also holds SY Plus).
+        self.deal_date_field = cfg.get("deal_date_field", "Appt_Date_Time")
+        self.deal_owner_domain = (cfg.get("deal_owner_domain", "@sycomms.co.uk") or "").lower()
+        self._deals_cache = (0.0, None)
         self._token = None
         self._token_exp = 0.0
         self._users = None
@@ -59,6 +64,14 @@ class ZohoClient:
     @property
     def is_events(self) -> bool:
         return self.module.lower() in ("events", "meetings")
+
+    @property
+    def is_deals(self) -> bool:
+        return self.module.lower() == "deals"
+
+    @property
+    def can_mark_complete(self) -> bool:
+        return not (self.is_events or self.is_deals)
 
     def _access_token(self) -> str:
         if self._token and time.time() < self._token_exp - 60:
@@ -130,6 +143,8 @@ class ZohoClient:
                     end="Appointment_End_Time", extra=extra)
 
     def list_jobs(self, day: date) -> list[dict]:
+        if self.is_deals:
+            return [j for j in self._all_deal_jobs() if j["day"] == day.isoformat()]
         f = self._fields()
         start = datetime.combine(day, dtime(0, 0), UK).isoformat()
         end = datetime.combine(day, dtime(23, 59, 59), UK).isoformat()
@@ -162,8 +177,8 @@ class ZohoClient:
                 if not (data.get("info") or {}).get("more_records"):
                     break
             return sorted(jobs, key=lambda j: j.get("start") or "")
-        except ZohoError:
-            raise last_err
+        except ZohoError as e2:
+            raise ZohoError(f"{e2}  (quick lookup also failed: {last_err})")
 
     def _engineer_of(self, rec):
         v = rec.get(self.engineer_field)
@@ -195,8 +210,84 @@ class ZohoClient:
             "hydrated": False,
         }
 
+    # ------------------------------------------------------------ deals diary
+    def _all_deal_jobs(self) -> list[dict]:
+        """Every Deal with a diary date, read the same way as the Upgrade Tracker
+        (plain paged list — no COQL scope needed). Cached for 3 minutes."""
+        ts, cached = self._deals_cache
+        if cached is not None and time.time() - ts < 180:
+            return cached
+        df = self.deal_date_field
+        field_sets = [f"Deal_Name,Owner,Account_Name,Contact_Name,Stage,Description,{df}",
+                      f"Deal_Name,Owner,Account_Name,Stage,{df}"]
+        records, err = None, None
+        for fields in field_sets:
+            try:
+                records = []
+                for page in range(1, 51):
+                    data = self._req("GET", "Deals", params={
+                        "fields": fields, "per_page": 200, "page": page,
+                        "sort_by": "Modified_Time", "sort_order": "desc"})
+                    records.extend(data.get("data", []) or [])
+                    if not (data.get("info") or {}).get("more_records"):
+                        break
+                break
+            except ZohoError as e:
+                records, err = None, e
+        if records is None:
+            raise err
+        jobs = []
+        for r in records:
+            raw = r.get(df)
+            if not raw:
+                continue
+            try:
+                dt = datetime.fromisoformat(raw)
+                dt = dt.astimezone(UK) if dt.tzinfo else dt.replace(tzinfo=UK)
+            except ValueError:
+                continue
+            owner = r.get("Owner") or {}
+            if self.deal_owner_domain and not (owner.get("email") or "").lower().endswith(self.deal_owner_domain):
+                continue
+            acc = r.get("Account_Name") or {}
+            jobs.append({
+                "id": r.get("id"),
+                "module": "Deals",
+                "title": r.get("Deal_Name") or acc.get("name") or "(untitled deal)",
+                "start": dt.isoformat(),
+                "end": None,
+                "day": dt.date().isoformat(),
+                "status": r.get("Stage") or "",
+                "engineer": {"id": owner.get("id"), "name": owner.get("name", ""),
+                             "email": (owner.get("email") or "").lower()},
+                "consultant": owner.get("name", ""),
+                "for_name": acc.get("name", "") if isinstance(acc, dict) else "",
+                "account_id": _lookup_id(acc),
+                "contact_id": _lookup_id(r.get("Contact_Name")),
+                "notes": r.get("Description") or "",
+                "hydrated": False,
+            })
+        jobs.sort(key=lambda j: j["start"])
+        self._deals_cache = (time.time(), jobs)
+        return jobs
+
     # ------------------------------------------------------------ full job
     def hydrate(self, job: dict) -> dict:
+        if job.get("module") == "Deals":
+            job = dict(job)
+            contact = None
+            if job.get("contact_id"):
+                try:
+                    contact = self._get_record("Contacts", job["contact_id"])
+                except ZohoError:
+                    contact = None
+            if job.get("account_id"):
+                job.update(self.account_details(job["account_id"], contact))
+            elif contact:
+                job.update(self._contact_fields(contact))
+            job.setdefault("account_name", job.get("for_name", ""))
+            job["hydrated"] = True
+            return job
         rec = self._get_record(self.module, job["id"])
         job = dict(job)
         f = self._fields()
@@ -354,7 +445,7 @@ class ZohoClient:
         return True
 
     def mark_completed(self, job_id):
-        if self.is_events:
+        if not self.can_mark_complete:
             return False  # Meetings have no status field – note + attachment is enough
         self._req("PUT", f"{self.module}/{job_id}",
                   json={"data": [{"Status": self.completed_status}]})
@@ -368,7 +459,7 @@ def demo_jobs(day: date, engineer_name: str) -> list[dict]:
 
     eng = {"id": "demo", "name": engineer_name, "email": ""}
     return [
-        {"id": "demo-1", "module": "Demo", "title": "New phone system + FTTP install",
+        {"id": f"demo-1-{day.isoformat()}", "module": "Demo", "title": "New phone system + FTTP install",
          "start": at(9, 0), "end": at(13, 0), "status": "Upcoming", "engineer": eng,
          "for_name": "Harbour View Dental Practice", "hydrated": True,
          "account_id": "demo-acc-1", "account_name": "Harbour View Dental Practice",
@@ -376,7 +467,7 @@ def demo_jobs(day: date, engineer_name: str) -> list[dict]:
          "postcode": "SY3 9XX", "contact_name": "Rachel Evans", "contact_phone": "01743 000111",
          "contact_email": "rachel@example.com", "service": "Installation",
          "notes": "6 x Yealink T54W, 1 x W73P DECT for reception. Gamma FTTP 500/75. Customer wants hunt group for reception + voicemail to email."},
-        {"id": "demo-2", "module": "Demo", "title": "FAULT – no inbound calls on main number",
+        {"id": f"demo-2-{day.isoformat()}", "module": "Demo", "title": "FAULT – no inbound calls on main number",
          "start": at(14, 0), "end": at(15, 30), "status": "Upcoming", "engineer": eng,
          "for_name": "Oakfield Motors Ltd", "hydrated": True,
          "account_id": "demo-acc-2", "account_name": "Oakfield Motors Ltd",
@@ -384,7 +475,7 @@ def demo_jobs(day: date, engineer_name: str) -> list[dict]:
          "postcode": "TF1 0XX", "contact_name": "Gary Hughes", "contact_phone": "07700 900123",
          "contact_email": "gary@example.com", "service": "Fault visit",
          "notes": "Customer reports main number rings out / goes to busy since Monday. Outbound OK."},
-        {"id": "demo-3", "module": "Demo", "title": "Wi-Fi coverage health check",
+        {"id": f"demo-3-{day.isoformat()}", "module": "Demo", "title": "Wi-Fi coverage health check",
          "start": at(16, 0), "end": at(17, 0), "status": "Upcoming", "engineer": eng,
          "for_name": "The Riverside Café", "hydrated": True,
          "account_id": "demo-acc-3", "account_name": "The Riverside Café",

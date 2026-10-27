@@ -9,7 +9,7 @@ on screen → **Complete & sync job**.
 **What "Complete & sync" does**
 1. Builds a branded A4 PDF (customer copy + office copy).
 2. Adds a **Note** and the **PDF** (plus any site photos) to the customer's Zoho **Account**.
-3. Marks the Zoho **Appointment** as Completed.
+3. (Appointments module only) marks the Zoho **Appointment** as Completed.
 4. Emails the customer their copy and the office its copy **through Zoho**, from the address the
    engineer picks (hello@, support@ …). Both emails are logged under the account's Emails in Zoho.
    The office subject gets flags like `[FOLLOW-UP VISIT NEEDED]`, `[CHARGEABLE]`, `[NOT SIGNED BY CUSTOMER]`.
@@ -47,7 +47,7 @@ ZohoCRM.modules.ALL,ZohoCRM.coql.READ,ZohoCRM.users.READ,ZohoCRM.settings.emails
 | `send_mail.all.CREATE` | Sending the emails | Falls back to the backup [smtp] login, if set |
 | `Files.CREATE` | Attaching the PDF to the email | Same as above |
 | `settings.emails.READ` | Listing hello@ / support@ etc. | Uses the `allowed_from` list in Secrets instead |
-| `coql.READ` | Fast diary lookup | Slower fallback is used automatically |
+| `coql.READ` | Quicker lookup for the Appointments/Meetings diary | Not needed for the Deals diary |
 | `users.READ` | Name list on the login screen + "Only my jobs" | Add `engineer_names` in Secrets |
 
 Then swap the code for a refresh token (POST to
@@ -60,13 +60,12 @@ missing, so you can try it first and only regenerate if needed.
 (Setup → Channels → Email → Organization Emails) and verified — the same ones your other apps send from.
 
 **Where the jobs come from**
-- Default: Zoho CRM **Appointments** module (`Appointments__s`). The appointment's *Appointment For*
-  can be an Account, Contact or Deal — the app finds the Account either way.
-- If visits are booked as **Meetings** instead, set `appointments_module = "Events"`.
-- "Only my jobs" matches the appointment **Owner** to the name the engineer logs in with, so names
-  should be spelt as they are in Zoho (the login list offers your Zoho users' names, or the
-  `engineer_names` list in Secrets). If engineers are recorded in a different field, set
-  `engineer_field` to that field's API name. They can always switch "Only my jobs" off.
+- Default: Zoho **Deals**, read exactly like the Upgrade Tracker — each deal's `Appt_Date_Time`
+  is a diary entry, only deals owned by @sycomms.co.uk staff are shown (Deals also holds SY Plus).
+  The engineer picks the one they're attending; the customer details come from the deal's Account
+  and Contact. Day view or "Next 7 days". The chip shows the sales consultant on the deal.
+- Prefer Zoho's Appointments or Meetings modules instead? Set `appointments_module` to
+  `"Appointments__s"` or `"Events"` (those also support "Only my jobs" and marking complete).
 - Not in the diary? Engineers can search any Zoho account, or start a blank sheet.
 
 ## Good to know

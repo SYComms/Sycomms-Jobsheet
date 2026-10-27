@@ -186,6 +186,7 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 .pe-step-row .ico{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:.8rem;font-weight:800;flex-shrink:0}
 .pe-step-row .ico.ok{background:rgba(52,211,153,.15);color:var(--good)}.pe-step-row .ico.fail{background:rgba(248,113,113,.15);color:var(--bad)}.pe-step-row .ico.skip{background:var(--surface-3);color:var(--muted)}
 .pe-step-row .l{font-weight:600;color:var(--text);font-size:.92rem}.pe-step-row .d{color:var(--muted);font-size:.8rem;margin-top:2px}
+.pe-dayhead{font-size:.74rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-2);margin:14px 2px 8px}
 .pe-siglabel{font-size:.74rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:6px 0 6px}
 [data-testid="stCheckbox"] [data-testid="stWidgetLabel"] p,[data-testid="stToggle"] [data-testid="stWidgetLabel"] p,.stCheckbox [data-testid="stWidgetLabel"] p{text-transform:none!important;letter-spacing:0!important;font-size:.92rem!important;font-weight:500!important;color:var(--text)!important}
 .st-key-topbar{justify-content:space-between;margin-bottom:6px}.st-key-topbar .stButton button{min-height:38px}
@@ -504,6 +505,14 @@ def fmt_time(iso):
         return ""
 
 
+def fmt_day(iso):
+    try:
+        d = datetime.fromisoformat(iso).astimezone(UK).date()
+    except (TypeError, ValueError):
+        return "No date"
+    return "Today" if d == date.today() else ("Tomorrow" if d == date.today() + timedelta(days=1) else d.strftime("%A %-d %B"))
+
+
 def guess_visit(job):
     t = " ".join(str(job.get(k) or "") for k in ("title", "service", "notes")).lower()
     if any(w in t for w in ("fault", "repair", "not working", "no dial", "down", "issue")):
@@ -576,27 +585,38 @@ def open_job(job):
 
 
 def jobs_screen():
-    c1, c2, c3 = st.columns([1.4, 1, 0.8], vertical_alignment="bottom")
+    client = None if DEMO else zoho_client()
+    deals_mode = bool(client and client.is_deals)
+    c1, c2, c3 = st.columns([1.3, 1, 0.8], vertical_alignment="bottom")
     with c1:
         day = st.date_input("Diary date", value=ss.get("day", date.today()), format="DD/MM/YYYY", key="day_pick")
         ss.day = day
     with c2:
-        mine = st.toggle("Only my jobs", value=ss.get("mine", True), key="mine_t")
-        ss.mine = mine
+        view = st.segmented_control("Show", ["Day", "Next 7 days"], default=ss.get("view", "Day"),
+                                    key="view_t", required=True)
+        ss.view = view
     with c3:
         if st.button("Refresh", icon=":material/refresh:", **FULL):
             fetch_jobs.clear()
+            if client:
+                client._deals_cache = (0.0, None)
             st.rerun()
+    mine = False
+    if not deals_mode:
+        mine = st.toggle("Only my jobs", value=ss.get("mine", True), key="mine_t")
+        ss.mine = mine
 
-    err = None
-    if DEMO:
-        jobs = demo_jobs(day, ENG["name"])
-    else:
+    days = [day] if view == "Day" else [day + timedelta(days=i) for i in range(7)]
+    jobs, err = [], None
+    for d in days:
+        if DEMO:
+            jobs += demo_jobs(d, ENG["name"])
+            continue
         try:
-            client = zoho_client()
-            jobs = fetch_jobs(day.isoformat(), client, client.module)
+            jobs += fetch_jobs(d.isoformat(), client, client.module)
         except ZohoError as e:
-            jobs, err = [], str(e)
+            err = str(e)
+            break
     if err:
         st.error(f"Couldn't load the diary from Zoho. {err}")
 
@@ -605,28 +625,46 @@ def jobs_screen():
     finished = done_job_ids()
 
     with st.container(key="card-diary"):
-        nice = "Today" if day == date.today() else day.strftime("%A %-d %B")
-        section_header("01", f"{nice}'s jobs",
-                       f"{len(shown)} job{'s' if len(shown) != 1 else ''}"
-                       + (f" · {hidden} assigned to others (switch off 'Only my jobs' to see them)" if hidden else ""))
+        if view == "Day":
+            head = "Today" if day == date.today() else day.strftime("%A %-d %B")
+        else:
+            head = f"{day.strftime('%-d %b')} – {days[-1].strftime('%-d %b')}"
+        sub = f"{len(shown)} booked appointment{'s' if len(shown) != 1 else ''}"
+        if deals_mode:
+            sub += " from Zoho Deals — pick the one you're attending"
+        elif hidden:
+            sub += f" · {hidden} assigned to others (switch off 'Only my jobs' to see them)"
+        section_header("01", f"{head} — diary", sub)
         if not shown:
             render_html(f'<div class="pe-empty"><div class="ic">{ICON_CAL}</div>'
-                        '<div class="t">Nothing in your diary for this day</div>'
-                        '<ol><li>Check the date above, or tap Refresh</li>'
-                        '<li>Switch off "Only my jobs" to see the whole team</li>'
-                        '<li>Not booked in Zoho? Use "Job not in the diary" below</li></ol></div>')
+                        '<div class="t">Nothing in the diary for ' + ("this day" if view == "Day" else "these dates") + '</div>'
+                        '<ol><li>Check the date, or switch to "Next 7 days"</li>'
+                        + ('' if deals_mode else '<li>Switch off "Only my jobs" to see the whole team</li>')
+                        + '<li>Not booked in Zoho? Use "Job not in the diary" below</li></ol></div>')
 
+    last_day = None
     for i, job in enumerate(shown):
+        jd = fmt_day(job.get("start"))
+        if view != "Day" and jd != last_day:
+            render_html(f'<div class="pe-dayhead">{esc(jd)}</div>')
+            last_day = jd
         done = job["id"] in finished
         with st.container(key=f"card-job-{'done-' if done else ''}{i}"):
-            t = f"{fmt_time(job.get('start'))}–{fmt_time(job.get('end'))}" if job.get("start") else "No time set"
+            if job.get("start"):
+                t = fmt_time(job["start"]) + (f"–{fmt_time(job['end'])}" if job.get("end") else "")
+            else:
+                t = "No time set"
             chips = chip(job.get("status") or "Booked", "accent")
             if done:
                 chips = chip("Job sheet sent", "good")
-            if not mine and job.get("engineer", {}).get("name"):
-                chips += chip(job["engineer"]["name"])
-            render_html(f'<div class="job-time">{esc(t)}</div><div class="job-title">{esc(job["title"])}</div>'
-                        f'<div class="job-cust">{esc(job.get("for_name") or job.get("account_name") or "")}</div>{chips}')
+            who = job.get("consultant") or ((job.get("engineer") or {}).get("name") if not mine else "")
+            if who:
+                chips += chip(("Consultant: " if job.get("consultant") else "") + who)
+            title = job["title"]
+            cust = job.get("for_name") or job.get("account_name") or ""
+            render_html(f'<div class="job-time">{esc(t)}</div><div class="job-title">{esc(title)}</div>'
+                        + (f'<div class="job-cust">{esc(cust)}</div>' if cust and cust != title else '<div style="height:8px"></div>')
+                        + chips)
             if st.button("Open job sheet" if not done else "Open again", key=f"open_{job['id']}",
                          type="primary" if not done else "secondary", icon=":material/assignment:", **FULL):
                 open_job(job)
@@ -928,7 +966,7 @@ def sheet_screen():
                 st.caption(f":orange[Couldn't load Zoho sending addresses: {sender_err}]")
         chk("save_zoho", "Save PDF + notes to the customer's Zoho account", disabled=not linked)
         appt = job.get("module") not in ("Demo", "Manual") and not DEMO
-        if appt and not zoho_client().is_events:
+        if appt and zoho_client().can_mark_complete:
             chk("mark_complete", "Mark the Zoho appointment as completed")
 
         issues = problems()
