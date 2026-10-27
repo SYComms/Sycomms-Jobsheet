@@ -80,6 +80,14 @@ missing, so you can try it first and only regenerate if needed.
   (it also supports "Only my jobs" and marking the appointment completed).
 - Not in the diary at all? Engineers can search any Zoho account, or start a blank sheet.
 
+**Quotes from the quotation tool** — upload the quote's saved JSON:
+- *Job not in the diary? → Start from a quote* creates the job sheet from it and links it to the Zoho
+  customer automatically when the company name matches.
+- *Load details from the quote* on any open job sheet fills in the kit sold (handsets and counts,
+  softphone users, software, broadband package + expected speeds, router) and lists the full kit —
+  headsets, Wi-Fi APs, switches etc. — in the office notes box. Customer details from Zoho are kept.
+- Bank details in the quote file are never read or shown.
+
 ## Good to know
 - Unfinished sheets auto-save as you go, so if an engineer loses signal or closes the page, reopening
   the job restores it (stored on the app server; cleared if Streamlit restarts the app).

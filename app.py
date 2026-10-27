@@ -62,9 +62,15 @@ VISIT_TYPES = [
 FAULT_TYPES = {"Fault / repair", "Maintenance / health check"}
 COVER_OPTIONS = ["Phone system", "Broadband & network"]
 
-PLATFORMS = ["Gamma Horizon", "Gamma Phone Line+", "3CX", "Yeastar", "Wildix", "Microsoft Teams Phone",
+QUOTE_PLATFORM = "Telepo"   # the platform quotes from the quotation tool are sold on
+PLATFORMS = ["Telepo", "Gamma Horizon", "Gamma Phone Line+", "3CX", "Yeastar", "Wildix", "Microsoft Teams Phone",
              "Mitel", "BT Cloud Voice", "On-premise PBX"]
-HANDSET_MODELS = ["Yealink T31P", "Yealink T33G", "Yealink T43U", "Yealink T46U", "Yealink T53W",
+HANDSET_MODELS = [  # pricebook (quotation tool) handsets first
+                  "Grandstream GRP2612W", "Grandstream GRP2615", "Grandstream GRP2650", "Grandstream GXV3350",
+                  "Grandstream GXV3470", "Grandstream GXV3480", "Yealink T88 Pro", "Grandstream WP836 (Wi-Fi)",
+                  "Grandstream DP720", "Grandstream DP735 (Rugged)", "Grandstream Dect Base Station",
+                  "Grandstream DP760 Repeater",
+                  "Yealink T31P", "Yealink T33G", "Yealink T43U", "Yealink T46U", "Yealink T53W",
                   "Yealink T54W", "Yealink T57W", "Yealink W73P (DECT)", "Yealink W76P (DECT)",
                   "Yealink W78P (DECT)", "Yealink CP925 (conference)", "Snom D735", "Poly VVX 350"]
 HANDSET_TYPES = ["Desk phone", "Cordless", "DECT", "Softphone"]
@@ -550,9 +556,12 @@ def chk(n, label, default=False, **kw):
 
 
 def _package_chosen():
-    """Package picked: fill in broadband type, provider and expected speeds from its name (e.g. 'FTTP 80/20')."""
-    F = ss.F  # always the current sheet
-    pkg = ss.get(wkey("package")) or ""
+    """Package picked in the dropdown."""
+    apply_package(ss.F, ss.get(wkey("package")) or "")
+
+
+def apply_package(F, pkg):
+    """Fill in broadband type, provider and expected speeds from a package name (e.g. 'FTTP 80/20')."""
     F["package"] = pkg
     up = pkg.upper()
     if up.startswith("FTTP"):
@@ -570,6 +579,127 @@ def _package_chosen():
         F["provider"] = "SY"
     for k in ("bb_type", "exp_down", "exp_up", "provider"):
         ss.pop(wkey(k), None)  # redraw those boxes with the new values
+
+
+# ---------------------------------------------------------------- quote JSON import
+_PC_RE = re.compile(r"\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b", re.I)
+_QUOTE_IGNORE = ("q_bank_name", "q_acc_holder", "q_acc_no", "q_sort_code")  # never read bank details
+
+
+def _qty(v):
+    try:
+        return int(float(v or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def read_quote(raw: bytes):
+    """Quotation-tool JSON -> (fields for the job sheet, kit summary text, company name)."""
+    snap = json.loads(raw.decode("utf-8-sig"))
+    if not isinstance(snap, dict) or not any(k.startswith("q_") for k in snap):
+        raise ValueError("That doesn't look like a quote saved from the quotation tool.")
+    snap = {k: v for k, v in snap.items() if k not in _QUOTE_IGNORE}
+    g = lambda k: str(snap.get(k) or "").strip()
+
+    def picked(prefix):
+        return {k[len(prefix):]: _qty(v) for k, v in snap.items() if k.startswith(prefix) and _qty(v) > 0}
+
+    desk, cord, heads, other = picked("desk_"), picked("cord_"), picked("hs_"), picked("oth_")
+    routers, switches = picked("rt_qty_"), picked("sw_qty_")
+    soft = _qty(snap.get("standalone_softphones_key"))
+    cord_handsets = {n: q for n, q in cord.items() if not re.search(r"base|repeater", n, re.I)}
+    n_handsets = sum(desk.values()) + sum(cord_handsets.values())
+
+    sw = []
+    if snap.get("q_sw_studio"):
+        sw.append("SY Comms Studio")
+    if _qty(snap.get("q_sw_ctd")):
+        sw.append(f"Click to Dial ×{_qty(snap.get('q_sw_ctd'))}")
+    if _qty(snap.get("q_sw_wb")):
+        sw.append(f"Call Recording Dashboard ×{_qty(snap.get('q_sw_wb'))}")
+    if soft:
+        sw.append(f"Softphone / mobile app users ×{soft}")
+
+    addr_raw = g("q_address")
+    pc = _PC_RE.search(addr_raw)
+    postcode = f"{pc.group(1)} {pc.group(2)}".upper() if pc else ""
+    lines = [l.strip(" ,") for l in addr_raw.replace("\r", "").split("\n") if l.strip(" ,")]
+    if postcode:
+        lines = [_PC_RE.sub("", l).strip(" ,") for l in lines]
+    address = ", ".join(l for l in lines if l)
+
+    contact = g("q_contact").split(" - ")[0].strip()
+    bb_prov = g("q_bb_provider")
+    has_bb = bool(bb_prov) and not bb_prov.lower().startswith("none")
+    has_phones = bool(n_handsets or soft)
+
+    f = {
+        "customer_name": g("q_comp_name"), "contact_name": contact, "cust_sign_name": contact,
+        "contact_phone": g("q_phone"), "contact_email": g("q_dir_email") or g("q_bill_email"),
+        "address": address, "postcode": postcode, "visit_type": "New installation",
+        "covered": [c for c, on in (("Phone system", has_phones), ("Broadband & network", has_bb)) if on],
+    }
+    if has_phones:
+        f.update({
+            "platform": QUOTE_PLATFORM,
+            "handset_models": list(desk) + list(cord),
+            "handsets_required": n_handsets,
+            "handset_types": [t for t, on in (("Desk phone", bool(desk)), ("DECT", bool(cord_handsets)),
+                                               ("Softphone", bool(soft))) if on],
+            "users_number": n_handsets + soft,
+            "software_included": "Yes" if sw else "No",
+        })
+        if sw:
+            f["software_name"] = ", ".join(sw)
+            f["licence_count"] = soft + _qty(snap.get("q_sw_ctd")) + (1 if snap.get("q_sw_studio") else 0)
+        if any(k.startswith("cs_") and v is True for k, v in snap.items()):
+            f["features"] = ["Call Scope"]
+    if has_bb:
+        f["provider"] = bb_prov
+        f["_package"] = g("q_bb_package")
+        if routers:
+            f["router"] = next(iter(routers))
+        elif snap.get("router_mode", "Auto-select") == "Auto-select":
+            f["router"] = "Draytek Vigor 2927 (FTTP/SoGEA)"
+
+    def kit(label, d):
+        return f"{label}: " + ", ".join(f"{q} × {n}" for n, q in d.items()) if d else ""
+    summary = [x for x in (
+        kit("Desk phones", desk), kit("DECT / cordless", cord),
+        f"Softphone / mobile app users: {soft}" if soft else "",
+        kit("Headsets", heads), kit("Other hardware", other),
+        kit("Router", routers) or (f"Router: {f['router']} (auto-selected)" if f.get("router") else ""),
+        kit("Switches", switches),
+        f"Broadband: {bb_prov} – {g('q_bb_package')}" if has_bb else "",
+        f"Software: {', '.join(sw)}" if sw else "",
+        f"Install: {g('q_install_type')}" + (f", {g('q_install_days')} day(s)" if g("q_install_days") else "") if g("q_install_type") else "",
+        f"Sites: {g('q_num_sites')}" if _qty(snap.get("q_num_sites")) > 1 else "",
+        f"Sold by: {g('q_rep_name')}" if g("q_rep_name") else "",
+    ) if x]
+    return f, "\n".join(summary), g("q_comp_name")
+
+
+def apply_quote(fields, summary, overwrite_customer):
+    """Put quote details onto the open sheet. Customer boxes are only filled when empty
+    (Zoho stays in charge of those) unless this is a brand-new sheet started from the quote."""
+    F = ss.F  # the sheet that's open now (may have just been created)
+    cust_keys = {"customer_name", "contact_name", "cust_sign_name", "contact_phone", "contact_email", "address", "postcode"}
+    for k, v in fields.items():
+        if k.startswith("_") or v in (None, "", []):
+            continue
+        if k in cust_keys and not overwrite_customer and (F.get(k) or "").strip():
+            continue
+        if k == "covered":
+            v = list(dict.fromkeys((F.get("covered") or []) + v))
+        F[k] = v
+        ss.pop(wkey(k), None)
+    if fields.get("_package"):
+        apply_package(F, fields["_package"])
+        ss.pop(wkey("package"), None)
+    if summary:
+        ss.job["notes"] = ((ss.job.get("notes") or "").strip() + "\n\nFrom the quote:\n" + summary).strip()
+    F["_quote_loaded"] = True
+    ss.nonce = uuid.uuid4().hex[:6]  # redraw every box from the updated sheet
 
 
 def set_now(n):
@@ -960,6 +1090,31 @@ def jobs_screen():
                         st.rerun()
         else:
             st.caption("Demo mode — Zoho search is switched off.")
+        st.markdown("**Start from a quote**")
+        qup = st.file_uploader("Quote JSON from the quotation tool", type=["json"], key="quote_start_up")
+        if qup is not None and st.button("Create job sheet from this quote", type="primary",
+                                         icon=":material/upload_file:", key="quote_start_go", **FULL):
+            try:
+                fields, summary, company = read_quote(qup.getvalue())
+            except (ValueError, UnicodeDecodeError) as e:
+                st.error(f"Couldn't read that file: {e}")
+            else:
+                job = {"id": f"quote-{uuid.uuid4().hex[:8]}", "module": "Manual", "title": f"Installation – {company}",
+                       "start": None, "end": None, "status": "", "hydrated": True, "account_name": company}
+                if not DEMO and zoho_client() and company:
+                    try:  # link to the Zoho customer automatically when the name matches exactly
+                        hit = [a for a in zoho_client().search_accounts(company)
+                               if a["name"].strip().lower() == company.strip().lower()]
+                        if len(hit) >= 1:
+                            a = hit[0]
+                            job.update(zoho_client().lead_details(a["id"]) if a["module"] == "Leads"
+                                       else zoho_client().account_details(a["id"]))
+                    except ZohoError:
+                        pass
+                open_job(job)
+                apply_quote(fields, summary, overwrite_customer=not job.get("record_id"))
+                st.rerun()
+        st.markdown("**Or**")
         if st.button("Start a blank job sheet", icon=":material/note_add:", **FULL):
             open_job({"id": f"blank-{uuid.uuid4().hex[:8]}", "module": "Manual", "title": "Blank job sheet",
                       "start": None, "end": None, "status": "", "hydrated": True})
@@ -1033,13 +1188,16 @@ def sheet_screen():
         render_html(f"<div style='padding-top:6px'>{chips}</div>")
 
     if job.get("notes"):
-        render_html(f'<div class="pe-note"><b>Office notes for this job</b>{esc(job["notes"])}</div>')
+        render_html(f'<div class="pe-note"><b>Office notes for this job</b>{esc(job["notes"]).replace(chr(10), "<br>")}</div>')
 
     if not linked and not DEMO and zoho_client():
         with st.expander("Link this job to a Zoho account", icon=":material/link:", expanded=True):
             st.caption("This booking isn't linked to a customer in Zoho. Find the customer (or lead) so the job "
                        "sheet, notes and emails are saved against it.")
-            default_term = F.get("customer_name") or job.get("for_name") or ""
+            if job.get("link_info"):
+                st.caption(f"What Zoho has on this booking: {job['link_info']}")
+            guess = re.split(r"\s[–—-]\s|:", job.get("title") or "")[-1].strip()
+            default_term = F.get("customer_name") or job.get("for_name") or guess
             term = st.text_input("Search Zoho customers and leads", value=default_term, key=wkey("link_search"),
                                  placeholder="Company name…")
             if term and len(term.strip()) >= 2:
@@ -1055,6 +1213,20 @@ def sheet_screen():
                     if st.button(label, key=wkey(f"link_{a['id']}"), icon=":material/add_link:", **FULL):
                         link_account(a["id"], a.get("module", "Accounts"))
                         st.rerun()
+
+    if not F.get("_quote_loaded"):
+        with st.expander("Load details from the quote (JSON)", icon=":material/upload_file:"):
+            st.caption("Upload the quote saved from the quotation tool — it fills in the handsets, software, "
+                       "broadband package and router that were sold. Bank details in the file are ignored.")
+            up = st.file_uploader("Quote JSON", type=["json"], key=wkey("quote_up"), label_visibility="collapsed")
+            if up is not None:
+                try:
+                    fields, summary, _co = read_quote(up.getvalue())
+                    apply_quote(fields, summary, overwrite_customer=False)
+                    ss["flash"] = ("info", "Quote loaded — kit, software and broadband filled in. Check them on site.")
+                    st.rerun()
+                except (ValueError, UnicodeDecodeError) as e:
+                    st.error(f"Couldn't read that file: {e}")
 
     # ---------------- 01 customer
     with st.container(key="card-s1"):
@@ -1303,6 +1475,7 @@ def link_account(account_id, module="Accounts"):
     if details.get("account_name"):
         F["customer_name"] = details["account_name"]
         ss.pop(wkey("customer_name"), None)
+    ss.nonce = uuid.uuid4().hex[:6]  # redraw every box from the updated sheet
     ss["flash"] = ("info", f"Linked to {details.get('account_name', 'the account')} in Zoho.")
 
 

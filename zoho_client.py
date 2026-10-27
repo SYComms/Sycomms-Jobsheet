@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 UK = ZoneInfo("Europe/London")
-CODE_VERSION = "2026-10-27.5"  # bump when this file changes
+CODE_VERSION = "2026-10-27.6"  # bump when this file changes
 
 
 class ZohoError(Exception):
@@ -373,31 +373,68 @@ class ZohoClient:
                 mod = m.get("api_name") if isinstance(m, dict) else m
             who = None
 
-        account_id, contact = None, None
-        lid = _lookup_id(link)
-        if lid:
-            if mod == "Contacts":
-                contact = self._get_record("Contacts", lid)
-                account_id = _lookup_id(contact.get("Account_Name"))
-            elif mod == "Deals":
-                deal = self._get_record("Deals", lid)
-                account_id = _lookup_id(deal.get("Account_Name"))
+        # Work out which customer the booking belongs to. Zoho can record it in several places:
+        # "Related To" (What_Id + $se_module), the contact (Who_Id), or — on newer meeting
+        # screens — the Participants list. Try them all, and keep a note of what Zoho said.
+        info, account_id, contact, lead_id = [], None, None, None
+        norm = {"account": "Accounts", "accounts": "Accounts", "deal": "Deals", "deals": "Deals",
+                "potentials": "Deals", "contact": "Contacts", "contacts": "Contacts",
+                "lead": "Leads", "leads": "Leads"}
+
+        def resolve(m, rid):
+            nonlocal account_id, contact, lead_id
+            if m == "Contacts":
+                contact = self._get_record("Contacts", rid)
+                account_id = account_id or _lookup_id(contact.get("Account_Name"))
+            elif m == "Deals":
+                deal = self._get_record("Deals", rid)
+                account_id = account_id or _lookup_id(deal.get("Account_Name"))
                 cid = _lookup_id(deal.get("Contact_Name"))
-                if cid:
+                if cid and not contact:
                     contact = self._get_record("Contacts", cid)
-            elif mod == "Leads":
-                job.update(self.lead_details(lid))
-                job["hydrated"] = True
-                return job
-            else:  # Accounts (or unknown -> assume account)
-                account_id = lid
-        if not contact and _lookup_id(who):
-            contact = self._get_record("Contacts", _lookup_id(who))
-            if not account_id:
-                account_id = _lookup_id(contact.get("Account_Name"))
+            elif m == "Leads":
+                if not self._get_record("Leads", rid):
+                    raise ZohoError("lead not found")
+                lead_id = rid
+            else:
+                if not self._get_record("Accounts", rid):
+                    raise ZohoError("account not found")
+                account_id = rid
+
+        lid = _lookup_id(link)
+        mod_n = norm.get(str(mod or "").strip().lower())
+        if lid:
+            info.append(f"Related to: {_lookup_name(link) or lid} ({mod or 'type not given'})")
+            for m in ([mod_n] if mod_n else ["Accounts", "Deals", "Contacts", "Leads"]):
+                try:
+                    resolve(m, lid)
+                    break
+                except ZohoError as e:
+                    info.append(f"couldn't open it as {m}: {str(e)[:80]}")
+        if not account_id and not lead_id and _lookup_id(who):
+            info.append(f"Contact: {_lookup_name(who) or _lookup_id(who)}")
+            try:
+                resolve("Contacts", _lookup_id(who))
+            except ZohoError as e:
+                info.append(f"couldn't open the contact: {str(e)[:80]}")
+        if is_ev and not account_id and not lead_id:
+            for pt in rec.get("Participants") or []:
+                if not isinstance(pt, dict) or pt.get("type") not in ("contact", "lead"):
+                    continue
+                pid = pt.get("participant") or pt.get("id")
+                info.append(f"Participant: {pt.get('name') or pid} ({pt.get('type')})")
+                try:
+                    resolve("Contacts" if pt.get("type") == "contact" else "Leads", pid)
+                except ZohoError as e:
+                    info.append(f"couldn't open it: {str(e)[:80]}")
+                if account_id or lead_id:
+                    break
+        job["link_info"] = "; ".join(info) or "Zoho has no customer, contact or participant on this booking"
 
         if account_id:
             job.update(self.account_details(account_id, contact))
+        elif lead_id:
+            job.update(self.lead_details(lead_id))
         elif contact:
             job.update(self._contact_fields(contact))
             job["account_name"] = _lookup_name(contact.get("Account_Name")) or job.get("for_name", "")
