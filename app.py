@@ -62,17 +62,9 @@ VISIT_TYPES = [
 FAULT_TYPES = {"Fault / repair", "Maintenance / health check"}
 COVER_OPTIONS = ["Phone system", "Broadband & network"]
 
-QUOTE_PLATFORM = "Telepo"   # the platform quotes from the quotation tool are sold on
-PLATFORMS = ["Telepo", "Gamma Horizon", "Gamma Phone Line+", "3CX", "Yeastar", "Wildix", "Microsoft Teams Phone",
-             "Mitel", "BT Cloud Voice", "On-premise PBX"]
-HANDSET_MODELS = [  # pricebook (quotation tool) handsets first
-                  "Grandstream GRP2612W", "Grandstream GRP2615", "Grandstream GRP2650", "Grandstream GXV3350",
-                  "Grandstream GXV3470", "Grandstream GXV3480", "Yealink T88 Pro", "Grandstream WP836 (Wi-Fi)",
-                  "Grandstream DP720", "Grandstream DP735 (Rugged)", "Grandstream Dect Base Station",
-                  "Grandstream DP760 Repeater",
-                  "Yealink T31P", "Yealink T33G", "Yealink T43U", "Yealink T46U", "Yealink T53W",
-                  "Yealink T54W", "Yealink T57W", "Yealink W73P (DECT)", "Yealink W76P (DECT)",
-                  "Yealink W78P (DECT)", "Yealink CP925 (conference)", "Snom D735", "Poly VVX 350"]
+QUOTE_PLATFORM = "UCM"      # the platform quotes from the quotation tool are sold on
+PLATFORMS = ["UCM", "Legacy"]
+HANDSET_MAKES = ["Grandstream", "Yealink", "Mix", "Other"]
 HANDSET_TYPES = ["Desk phone", "Cordless", "DECT", "Softphone"]
 SOFTWARE = ["Horizon Collaborate", "Horizon Integrator", "3CX app", "Yealink USB Connect",
             "Wildix Collaboration", "Microsoft Teams", "Call recording portal"]
@@ -593,6 +585,15 @@ def _qty(v):
         return 0
 
 
+def _make_of(models):
+    """Grandstream / Yealink / Mix / Other from the handset names sold."""
+    makes = {("Grandstream" if "grandstream" in m.lower() else "Yealink" if "yealink" in m.lower() else "Other")
+             for m in models}
+    if not makes:
+        return ""
+    return makes.pop() if len(makes) == 1 else "Mix"
+
+
 def read_quote(raw: bytes):
     """Quotation-tool JSON -> (fields for the job sheet, kit summary text, company name)."""
     snap = json.loads(raw.decode("utf-8-sig"))
@@ -642,7 +643,7 @@ def read_quote(raw: bytes):
     if has_phones:
         f.update({
             "platform": QUOTE_PLATFORM,
-            "handset_models": list(desk) + list(cord),
+            "handset_models": _make_of(list(desk) + list(cord)),
             "handsets_required": n_handsets,
             "handset_types": [t for t, on in (("Desk phone", bool(desk)), ("DECT", bool(cord_handsets)),
                                                ("Softphone", bool(soft))) if on],
@@ -1317,8 +1318,10 @@ def sheet_screen():
     if "Phone system" in covered:
         with st.container(key="card-s3"):
             section_header(f"{n:02d}", "Phone system & handsets")
-            pick("platform", "Phone system / platform", PLATFORMS)
-            multi_select("handset_models", "Handset make / model", HANDSET_MODELS)
+            one("platform", "Phone system / platform", PLATFORMS)
+            one("handset_models", "Handset make / model", HANDSET_MAKES)
+            if F.get("handset_models") == "Other":
+                txt("handset_make_other", "Other make / model", placeholder="e.g. Poly VVX 350")
             c1, c2 = st.columns(2)
             with c1:
                 num("handsets_required", "Handsets required")
@@ -1515,6 +1518,12 @@ def _pdf_fields():
         d["visit_date_display"] = F.get("visit_date", "")
     if F.get("cust_unavailable"):
         d["cust_sign_name"] = F.get("cust_sign_name") or "—"
+    hm = F.get("handset_models")
+    if isinstance(hm, list):  # sheets saved before the make buttons existed
+        hm = ", ".join(hm)
+    if hm == "Other" and (F.get("handset_make_other") or "").strip():
+        hm = f"Other – {F['handset_make_other'].strip()}"
+    d["handset_models"] = hm or ""
     return d
 
 
@@ -1534,7 +1543,7 @@ def note_text(d):
     cov = d.get("covered") or []
     if "Phone system" in cov:
         lines += ["", f"Phones: {d.get('platform') or '-'} | handsets {d.get('handsets_installed') or 0}/"
-                      f"{d.get('handsets_required') or 0} ({', '.join(d.get('handset_models') or []) or '-'}) | "
+                      f"{d.get('handsets_required') or 0} ({d.get('handset_models') or '-'}) | "
                       f"users {d.get('users_configured') or 0}/{d.get('users_number') or 0} | DDI {d.get('ddi_range') or '-'}"]
         if d.get("features"):
             lines.append("Features: " + ", ".join(d["features"]))
