@@ -1143,10 +1143,14 @@ def jobs_screen():
             who = job.get("consultant") or ((job.get("engineer") or {}).get("name") if not mine else "")
             if who:
                 chips += chip((f"{job.get('booked_label', 'Consultant')}: " if job.get("consultant") else "") + who)
-            title = job["title"]
-            cust = job.get("for_name") or job.get("account_name") or ""
-            render_html(f'<div class="job-time">{esc(t)}</div><div class="job-title">{esc(title)}</div>'
-                        + (f'<div class="job-cust">{esc(cust)}</div>' if cust and cust != title else '<div style="height:8px"></div>')
+            title = job["title"] or ""
+            cust = (job.get("for_name") or job.get("account_name") or "").strip()
+            if cust and cust.lower() not in title.lower():
+                big, small = cust, title  # customer as the heading, meeting title underneath
+            else:
+                big, small = title or cust, ""
+            render_html(f'<div class="job-time">{esc(t)}</div><div class="job-title">{esc(big)}</div>'
+                        + (f'<div class="job-cust">{esc(small)}</div>' if small else '<div style="height:8px"></div>')
                         + chips)
             if st.button("Open job sheet" if not done else "Open again", key=f"open_{job['id']}",
                          type="primary" if not done else "secondary", icon=":material/assignment:", **FULL):
