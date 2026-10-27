@@ -37,11 +37,17 @@ if the engineer ticks the box.
 
 Tip: set `demo_mode = true` first to try it with sample jobs before connecting Zoho.
 
-## Zoho setup (api-console.zoho.eu)
-Use a **Self Client** and generate a code with these scopes:
+## Zoho setup — the easy way (inside the app)
+On the login screen, open **Office: Zoho connection** and unlock it with the `admin_password` from
+Secrets (or the app password if none is set). It shows the scope to copy into api-console.zoho.eu →
+Self Client → Generate Code; paste the code back, press **Create refresh token**, and copy the line it
+gives you into Secrets under `[zoho]`. **Check what it can do** confirms Deals, Meetings, accounts,
+sending addresses and users all work; **Use it now** switches this session over straight away.
+
+The scope it asks for:
 
 ```
-ZohoCRM.modules.ALL,ZohoCRM.coql.READ,ZohoCRM.users.READ,ZohoCRM.settings.emails.READ,ZohoCRM.send_mail.all.CREATE,ZohoCRM.Files.CREATE
+ZohoCRM.modules.ALL,ZohoCRM.settings.emails.READ,ZohoCRM.send_mail.all.CREATE,ZohoCRM.Files.CREATE,ZohoCRM.users.READ,ZohoCRM.coql.READ
 ```
 
 | Scope | Used for | If it's missing |

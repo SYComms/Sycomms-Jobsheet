@@ -25,6 +25,7 @@ from email.message import EmailMessage
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import requests
 import streamlit as st
 from PIL import Image, ImageOps
 
@@ -132,9 +133,130 @@ def zoho_client():
     """One shared Zoho connection, rebuilt automatically whenever the code or the
     [zoho] Secrets change (so a stale connection can never linger after an update)."""
     cfg = secret("zoho")
-    if not cfg:
+    over = st.session_state.get("_zoho_over")
+    if not cfg and not over:
         return None
-    return _zoho_for(CODE_VERSION, json.dumps(dict(cfg), sort_keys=True, default=str))
+    cfg = dict(cfg or {})
+    if over:  # a token just made on the Zoho connection page, used before Secrets are updated
+        cfg.update(over)
+    return _zoho_for(CODE_VERSION, json.dumps(cfg, sort_keys=True, default=str))
+
+
+# The scope this app needs. Everything it does: read the diary (Deals + Meetings) and customers,
+# add the note + PDF, send emails through Zoho, list sending addresses and users.
+ZOHO_SCOPE = ("ZohoCRM.modules.ALL,ZohoCRM.settings.emails.READ,ZohoCRM.send_mail.all.CREATE,"
+              "ZohoCRM.Files.CREATE,ZohoCRM.users.READ,ZohoCRM.coql.READ")
+
+
+def _zoho_checks(cfg):
+    """Try each thing the app needs with these credentials; returns [(label, ok, note)]."""
+    z = ZohoClient(cfg)
+    out = []
+    tests = [
+        ("Log in to Zoho", lambda: z._access_token()),
+        ("Read the diary — Deals", lambda: z._req("GET", "Deals", params={"fields": "Deal_Name", "per_page": 1})),
+        ("Read the diary — Meetings", lambda: z._req("GET", "Events", params={"fields": "Event_Title", "per_page": 1})),
+        ("Read customer accounts", lambda: z._req("GET", "Accounts", params={"fields": "Account_Name", "per_page": 1})),
+        ("List sending addresses (hello@, support@…)", lambda: z.from_addresses()),
+        ("List Zoho users (names on the login screen)", lambda: z._req("GET", "users", params={"type": "ActiveUsers", "per_page": 1})),
+    ]
+    for label, fn in tests:
+        try:
+            fn()
+            out.append((label, True, ""))
+        except Exception as e:
+            out.append((label, False, str(e)[:160]))
+        if label == "Log in to Zoho" and not out[-1][1]:
+            break
+    return out
+
+
+def zoho_setup_ui(kp="_zt"):
+    """Same flow as the quotation tool: copy the scope, paste the grant code, get a refresh token."""
+    zs = dict(secret("zoho") or {})
+    acc_url = zs.get("accounts_url", "https://accounts.zoho.eu").rstrip("/")
+    st.markdown("**1. At api-console.zoho.eu → Self Client → Generate Code, paste this scope:**")
+    st.code(ZOHO_SCOPE, language=None, wrap_lines=True)
+    st.caption("Set Time Duration to 10 minutes and click Create. The code only works once and expires quickly, "
+               "so paste it below straight away.")
+    cid = st.text_input("Client ID", value=zs.get("client_id", ""), key=f"{kp}_cid")
+    have_cs = zs.get("client_secret", "")
+    cs = st.text_input("Client Secret", value="", type="password", key=f"{kp}_cs",
+                       placeholder=(f"Leave blank to use the one in Secrets ({len(have_cs)} characters)"
+                                    if have_cs else "Paste the client secret"))
+    st.markdown("**2. Paste the code Zoho gives you:**")
+    code = st.text_input("Grant code", key=f"{kp}_code", placeholder="1000.xxxxxxxx.xxxxxxxx")
+    if st.button("Create refresh token", type="primary", key=f"{kp}_make", **FULL):
+        clean = lambda v: "".join(str(v or "").split()).strip("\"'")
+        cid_c, code_c, cs_c = clean(cid), clean(code), clean(cs or have_cs)
+        if not (cid_c and cs_c and code_c):
+            st.error("Fill in the Client ID, Client Secret and the grant code first.")
+        elif len(cs_c) < 30:
+            st.error(f"The Client Secret looks too short ({len(cs_c)} characters — a real one is about 42). "
+                     "Nothing was sent to Zoho, so your grant code is still unused. Paste the full secret and try again.")
+        else:
+            try:
+                r = requests.post(f"{acc_url}/oauth/v2/token", timeout=20, data={
+                    "grant_type": "authorization_code", "client_id": cid_c, "client_secret": cs_c, "code": code_c})
+                try:
+                    j = r.json()
+                except ValueError:
+                    j = None
+                if j and j.get("refresh_token"):
+                    ss[f"{kp}_result"] = {"rt": j["refresh_token"], "cid": cid_c, "cs": cs_c,
+                                          "scope": j.get("scope", "")}
+                    ss.pop(f"{kp}_checks", None)
+                elif j:
+                    ss.pop(f"{kp}_result", None)
+                    err = j.get("error", r.status_code)
+                    hint = {"invalid_code": "the code has already been used or has expired — generate a fresh one and paste it straight away.",
+                            "invalid_client": "the Client ID or Client Secret doesn't match — check they're from the same Self Client.",
+                            "invalid_client_secret": "the Client Secret is wrong — paste the full secret."}.get(str(err), "generate a fresh code and try again.")
+                    st.error(f"Zoho said '{err}': {hint}")
+                else:
+                    st.error(f"Zoho rejected the request (status {r.status_code}). Most likely the Client Secret is wrong or cut off.")
+            except requests.RequestException as e:
+                st.error(f"Couldn't reach Zoho: {e}")
+
+    res = ss.get(f"{kp}_result")
+    if res:
+        st.success("Refresh token created. In Streamlit → Manage app → Settings → Secrets, replace the "
+                   "refresh_token line under [zoho] with this, save, then reboot the app:")
+        st.code(f'refresh_token = "{res["rt"]}"', language="toml", wrap_lines=True)
+        if res["cid"] != zs.get("client_id", ""):
+            st.caption("You used a different Client ID from the one in Secrets — update client_id and client_secret too.")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Check what it can do", icon=":material/fact_check:", key=f"{kp}_check", **FULL):
+                cfg = dict(zs, client_id=res["cid"], client_secret=res["cs"], refresh_token=res["rt"])
+                with st.spinner("Checking with Zoho…"):
+                    ss[f"{kp}_checks"] = _zoho_checks(cfg)
+        with c2:
+            if st.button("Use it now (until Secrets are updated)", icon=":material/bolt:", key=f"{kp}_use", **FULL):
+                ss["_zoho_over"] = {"client_id": res["cid"], "client_secret": res["cs"], "refresh_token": res["rt"]}
+                try:
+                    fetch_jobs.clear()
+                except NameError:
+                    pass
+                st.success("This session is now using the new token. Still paste it into Secrets so it sticks.")
+        for label, ok, note in ss.get(f"{kp}_checks") or []:
+            st.markdown(f"{'✅' if ok else '❌'} **{esc(label)}**" + (f"  \n<span style='color:var(--muted);font-size:.8rem'>{esc(note)}</span>" if note else ""),
+                        unsafe_allow_html=True)
+
+
+def zoho_setup_gate():
+    """Office-only panel on the login screen, behind the admin password (or the app password if none is set)."""
+    with st.expander("Office: Zoho connection", icon=":material/key:"):
+        admin_pw = secret("app", "admin_password") or secret("app", "password")
+        if not ss.get("_zoho_admin"):
+            pw = st.text_input("Admin password", type="password", key="_zt_admin_pw")
+            if st.button("Unlock", key="_zt_admin_go", icon=":material/lock_open:"):
+                if admin_pw and hmac.compare_digest(str(admin_pw), (pw or "").strip()):
+                    ss["_zoho_admin"] = True
+                    st.rerun()
+                st.error("That password isn't right.")
+            return
+        zoho_setup_ui()
 
 
 # =====================================================================
@@ -552,6 +674,7 @@ def login_screen():
             else:
                 ss.engineer = {"name": who.title() if who.islower() else who, "email": ""}
                 st.rerun()
+    zoho_setup_gate()
     st.stop()
 
 
@@ -565,7 +688,7 @@ ENG = ss.engineer
 #  JOB LIST
 # =====================================================================
 @st.cache_data(ttl=120, show_spinner=False)
-def fetch_jobs(day_iso: str, _client, sources: str):
+def fetch_jobs(day_iso: str, _client, sources: str, conn: str = ""):
     jobs = _client.list_jobs(date.fromisoformat(day_iso))
     return jobs, list(_client.last_warnings)
 
@@ -708,7 +831,7 @@ def jobs_screen():
             jobs += demo_jobs(d, ENG["name"])
             continue
         try:
-            got, w = fetch_jobs(d.isoformat(), client, ",".join(client.sources))
+            got, w = fetch_jobs(d.isoformat(), client, ",".join(client.sources), str(id(client)))
             jobs += got
             warns.update(w)
         except ZohoError as e:
@@ -717,7 +840,12 @@ def jobs_screen():
     if err:
         st.error(f"Couldn't load the diary from Zoho. {err}")
     for w in sorted(warns):
-        st.warning(f"Part of the diary couldn't be loaded — {w}")
+        src = w.split(":", 1)[0]
+        if "oauth scope" in w.lower():
+            st.warning(f"{src} aren't showing yet — the Zoho connection doesn't have permission to read them. "
+                       "Office: log out, open 'Office: Zoho connection' on the login screen and make a new token.")
+        else:
+            st.warning(f"Part of the diary couldn't be loaded — {w}")
 
     shown = [j for j in jobs if is_mine(j)] if mine else jobs
     hidden = len(jobs) - len(shown)
