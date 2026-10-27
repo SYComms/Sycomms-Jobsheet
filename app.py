@@ -501,7 +501,8 @@ def area(n, label, placeholder="", height=110):
 
 
 def num(n, label):
-    F[n] = st.number_input(label, min_value=0, step=1, value=F.get(n), key=wkey(n), placeholder="0")
+    cur = F.get(n)
+    F[n] = st.number_input(label, min_value=0, step=1, value=int(cur) if cur not in (None, "") else 0, key=wkey(n))
     return F[n]
 
 
@@ -1327,8 +1328,10 @@ def sheet_screen():
                 num("handsets_required", "Handsets required")
             with c2:
                 num("handsets_installed", "Handsets installed")
-            if (F.get("handsets_required") or 0) and (F.get("handsets_installed") or 0) < F["handsets_required"]:
-                st.caption(":orange[Fewer handsets installed than required — add the reason under Outstanding items.]")
+            req, inst = F.get("handsets_required") or 0, F.get("handsets_installed") or 0
+            if req and inst and inst < req:  # only once an installed figure has been entered
+                st.caption(f":orange[{req - inst} fewer handset{'s' if req - inst != 1 else ''} installed than required — "
+                           "add the reason under Outstanding items.]")
             multi("handset_types", "Handset type(s)", HANDSET_TYPES)
             txt("handset_other", "Other handset type", placeholder="Optional")
             one("software_included", "Software included?", ["Yes", "No"])
