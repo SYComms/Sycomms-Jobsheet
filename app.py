@@ -66,7 +66,7 @@ QUOTE_PLATFORM = "UCM"      # the platform quotes from the quotation tool are so
 PLATFORMS = ["UCM", "Legacy"]
 HANDSET_MAKES = ["Grandstream", "Yealink", "Mix", "Other"]
 HANDSET_TYPES = ["Desk phone", "Cordless", "DECT", "Softphone"]
-SOFTWARE = ["Mobile softphone", "Call recording portal", "Call Scope", "Wallboard", "Mix"]
+SOFTWARE = ["Mobile softphone", "Call recording portal", "Call Scope", "Wallboard"]
 FEATURES = ["Voicemail", "Voicemail to email", "Call groups / hunt groups", "Auto-attendant / IVR",
             "Call recording", "Out-of-hours routing", "Call queues", "Music on hold", "Call Scope"]
 BB_TYPES = ["Full Fibre (FTTP)", "Fibre to cabinet (FTTC)", "SoGEA", "Ethernet leased line", "4G / 5G", "Other"]
@@ -661,9 +661,11 @@ def read_quote(raw: bytes):
             cats.append("Wallboard")
         f["software_included"] = "Yes" if (sw or cats) else "No"
         if cats:
-            f["software_name"] = cats[0] if len(cats) == 1 else "Mix"
-        if sw or cats:
-            f["licence_count"] = soft + _qty(snap.get("q_sw_ctd")) + (1 if snap.get("q_sw_studio") else 0)
+            qty = {"Mobile softphone": soft, "Call recording portal": _qty(snap.get("q_sw_wb")),
+                   "Call Scope": 1, "Wallboard": _qty(snap.get("wallboard_users_key")) or 1}
+            f["software_items"] = cats
+            for c in cats:
+                f[_sw_key(c)] = max(1, qty.get(c) or 1)
         if any(k.startswith("cs_") and v is True for k, v in snap.items()):
             f["features"] = ["Call Scope"]
     if has_bb:
@@ -712,6 +714,41 @@ def apply_quote(fields, summary, overwrite_customer):
         ss.job["notes"] = ((ss.job.get("notes") or "").strip() + "\n\nFrom the quote:\n" + summary).strip()
     F["_quote_loaded"] = True
     ss.nonce = uuid.uuid4().hex[:6]  # redraw every box from the updated sheet
+
+
+def _sw_key(item):
+    return "sw_q_" + re.sub(r"[^a-z0-9]+", "_", item.lower()).strip("_")
+
+
+def software_summary(F):
+    """'6 × Mobile softphone, 1 × Call Scope' and the total licence count."""
+    parts, total = [], 0
+    for it in F.get("software_items") or []:
+        q = int(F.get(_sw_key(it)) or 0)
+        if q:
+            parts.append(f"{q} × {it}")
+            total += q
+    return ", ".join(parts), total
+
+
+def software_picker():
+    # sheets saved before multi-select: carry the single choice across
+    if not F.get("software_items") and F.get("software_name") in SOFTWARE:
+        F["software_items"] = [F["software_name"]]
+        F.setdefault(_sw_key(F["software_name"]), F.get("licence_count") or 1)
+    items = multi("software_items", "Software / application — tap all that apply", SOFTWARE)
+    if items:
+        cols = st.columns(2)
+        for i, it in enumerate(items):
+            k = _sw_key(it)
+            if not F.get(k):
+                F[k] = 1  # newly ticked: start at 1
+            with cols[i % 2]:
+                num(k, f"{it} — quantity")
+    summary, total = software_summary(F)
+    F["software_name"], F["licence_count"] = summary, total
+    if total:
+        st.caption(f"Licence / seat count: **{total}**  ·  {summary}")
 
 
 def set_now(n):
@@ -1346,8 +1383,7 @@ def sheet_screen():
             txt("handset_other", "Other handset type", placeholder="Optional")
             one("software_included", "Software included?", ["Yes", "No"])
             if F.get("software_included") == "Yes":
-                one("software_name", "Software / application", SOFTWARE)
-                num("licence_count", "Licence / seat count")
+                software_picker()
             c1, c2 = st.columns(2)
             with c1:
                 num("users_number", "Number of users")
