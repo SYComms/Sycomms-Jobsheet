@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 UK = ZoneInfo("Europe/London")
-CODE_VERSION = "2026-10-27.9"  # bump when this file changes
+CODE_VERSION = "2026-10-27.10"  # bump when this file changes
 
 
 class ZohoError(Exception):
@@ -271,29 +271,70 @@ class ZohoClient:
             raise ZohoError(f"{e}  (other lookups also failed: {errs[-1] if errs else ''})")
 
     def _fill_names(self, jobs, module):
-        """The quick diary lookup gives a meeting's customer as an ID only. Fetch the day's
-        meetings again in batches of 100 (one request each) to get the customer names for the list."""
+        """The quick diary lookup gives a meeting's customer as an ID only. For the list we want the
+        COMPANY (and the contact, if there is one). Batched: one request per 100 meetings, plus at
+        most one for contacts and one for leads to turn a person into their company."""
         if module != "Events":
             return jobs
-        need = [j for j in jobs if not j.get("for_name") and j.get("id")]
-        for i in range(0, len(need), 100):
-            batch = need[i:i + 100]
+        todo = [j for j in jobs if j.get("id")]
+        recs = {}
+        for i in range(0, len(todo), 100):
             try:
-                data = self._req("GET", "Events", params={"ids": ",".join(str(j["id"]) for j in batch),
+                data = self._req("GET", "Events", params={"ids": ",".join(str(j["id"]) for j in todo[i:i + 100]),
                                                           "fields": "What_Id,Who_Id,Participants"})
             except ZohoError:
-                return jobs  # names will still fill in when the job is opened
-            by_id = {str(r.get("id")): r for r in data.get("data", []) or []}
-            for j in batch:
-                r = by_id.get(str(j["id"])) or {}
-                name = _lookup_name(r.get("What_Id")) or _lookup_name(r.get("Who_Id"))
-                if not name:
-                    for pt in r.get("Participants") or []:
-                        if isinstance(pt, dict) and pt.get("type") in ("contact", "lead") and pt.get("name"):
-                            name = pt["name"]
-                            break
-                if name:
-                    j["for_name"] = name
+                return jobs  # names still fill in when the job is opened
+            recs.update({str(r.get("id")): r for r in data.get("data", []) or []})
+
+        contact_ids, lead_ids, plan = set(), set(), {}
+        for j in todo:
+            r = recs.get(str(j["id"])) or {}
+            what, mod = r.get("What_Id"), str(r.get("$se_module") or "").lower()
+            company = person = None
+            p_ref = None  # ("Contacts"|"Leads", id) to look the company up from
+            if _lookup_id(what) and mod in ("leads", "lead"):
+                person, p_ref = _lookup_name(what), ("Leads", _lookup_id(what))
+            elif _lookup_id(what) and mod in ("contacts", "contact"):
+                person, p_ref = _lookup_name(what), ("Contacts", _lookup_id(what))
+            elif _lookup_id(what):
+                company = _lookup_name(what)  # account (or deal)
+            if _lookup_id(r.get("Who_Id")):
+                person = person or _lookup_name(r.get("Who_Id"))
+                p_ref = p_ref or ("Contacts", _lookup_id(r.get("Who_Id")))
+            if not company and not p_ref:
+                for pt in r.get("Participants") or []:
+                    if isinstance(pt, dict) and pt.get("type") in ("contact", "lead") and pt.get("participant"):
+                        person = person or pt.get("name")
+                        p_ref = ("Contacts" if pt["type"] == "contact" else "Leads", str(pt["participant"]))
+                        break
+            if not company and p_ref:
+                (contact_ids if p_ref[0] == "Contacts" else lead_ids).add(str(p_ref[1]))
+            plan[str(j["id"])] = (company, person, p_ref)
+
+        companies = {}
+        for mod_name, ids, field in (("Contacts", contact_ids, "Account_Name,Full_Name"),
+                                     ("Leads", lead_ids, "Company,Full_Name")):
+            ids = list(ids)
+            for i in range(0, len(ids), 100):
+                try:
+                    data = self._req("GET", mod_name, params={"ids": ",".join(ids[i:i + 100]), "fields": field})
+                except ZohoError:
+                    continue
+                for r in data.get("data", []) or []:
+                    co = _lookup_name(r.get("Account_Name")) if mod_name == "Contacts" else (r.get("Company") or "")
+                    if co:
+                        companies[(mod_name, str(r.get("id")))] = co
+
+        for j in todo:
+            company, person, p_ref = plan.get(str(j["id"]), (None, None, None))
+            if not company and p_ref:
+                company = companies.get((p_ref[0], str(p_ref[1])))
+            if company:
+                j["for_name"] = company
+            elif person and not j.get("for_name"):
+                j["for_name"] = person
+            if person and person != j.get("for_name"):
+                j["contact_hint"] = person
         return jobs
 
     def _engineer_of(self, rec):
