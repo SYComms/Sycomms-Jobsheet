@@ -948,6 +948,7 @@ def jobs_screen():
             fetch_jobs.clear()
             if client:
                 client._deals_cache = (0.0, None)
+                client._users_until = 0.0
             st.rerun()
     mine = False
 
@@ -976,18 +977,35 @@ def jobs_screen():
 
     finished = done_job_ids()
 
+    users = client.users() if client else {}
+
     def people_of(j):
         names = list(j.get("people") or [])
-        eng_name = (j.get("engineer") or {}).get("name")
-        if eng_name:
-            names.append(eng_name)
+        eng = j.get("engineer") or {}
+        if eng.get("name"):
+            names.append(eng["name"])
+        for uid in list(j.get("people_ids") or []) + ([str(eng["id"])] if eng.get("id") else []):
+            nm = users.get(str(uid), {}).get("name")  # names filled in even if they were missing when the diary loaded
+            if nm:
+                names.append(nm)
         return [n for n in dict.fromkeys(names) if n]
 
+    def same_person(a, b):
+        """'Sam' matches 'Sam Myatt'; 'sam myatt' matches 'Sam Myatt'."""
+        ta, tb = a.lower().split(), b.lower().split()
+        return bool(ta) and all(t in tb for t in ta)
+
     everyone = "Everyone"
-    hosts = sorted({n for j in jobs for n in people_of(j)}, key=str.lower)
-    me = next((h for h in hosts if h.strip().lower() == ENG["name"].strip().lower()), None)
-    if "host_f" not in ss:  # first visit: the engineer's own bookings if they have any
-        ss.host_f = me or everyone
+    staff = {u.get("name") for u in users.values() if u.get("name")} | set(secret("app", "engineer_names", []) or [])
+    hosts = sorted({n for j in jobs for n in people_of(j)} | staff, key=str.lower)  # everyone, every day
+    me = next((h for h in hosts if same_person(ENG["name"], h)), None)
+    if ss.get("host_f_owner") != ENG["name"]:  # new login: always start on the engineer's own bookings
+        ss.host_f = me or ENG["name"]
+        ss.host_f_owner = ENG["name"]
+        ss.pop("host_f_w", None)
+    elif ss.host_f == ENG["name"] and me and me != ENG["name"]:
+        ss.host_f = me  # their Zoho name has turned up — use the exact spelling
+        ss.pop("host_f_w", None)
 
     with st.container(key="card-diary"):
         if view == "Day":
@@ -1007,8 +1025,7 @@ def jobs_screen():
 
         shown = jobs
         if ss.host_f != everyone:
-            hf = ss.host_f.strip().lower()
-            shown = [j for j in shown if any(n.strip().lower() == hf for n in people_of(j))]
+            shown = [j for j in shown if any(same_person(ss.host_f, n) for n in people_of(j))]
         if q and q.strip():
             words = q.lower().split()
             shown = [j for j in shown if all(w in " ".join(str(j.get(k) or "") for k in
@@ -1020,15 +1037,26 @@ def jobs_screen():
             sub += f" · {ss.host_f}"
         section_header("01", f"{head} — diary", sub)
         if not shown:
-            tips = '<li>Check the date, or switch to "Next 7 days"</li>'
+            when = "this day" if view == "Day" else "the next 7 days"
+            title = (f"No bookings for {ss.host_f} {when}" if ss.host_f != everyone and not (q and q.strip())
+                     else "No bookings match")
+            tips = ""
+            if view == "Day":
+                tips += '<li>Try "Next 7 days", or another date</li>'
             if ss.host_f != everyone or (q and q.strip()):
-                tips += '<li>Set Host / attendee to "Everyone" or clear the search</li>'
+                tips += '<li>Pick "Everyone" (or another name) above, or clear the search</li>'
             tips += '<li>Not booked in Zoho? Use "Job not in the diary" below</li>'
             render_html(f'<div class="pe-empty"><div class="ic">{ICON_CAL}</div>'
-                        '<div class="t">No bookings match</div><ol>' + tips + '</ol></div>')
-        if ss.host_f != everyone and not me and hosts:
-            st.caption(f"Tip: \"{ENG['name']}\" isn't the host or a participant on any booking here — "
-                       "check your name matches Zoho, or pick it from the list.")
+                        f'<div class="t">{esc(title)}</div><ol>' + tips + '</ol></div>')
+            if view == "Day" and ss.host_f != everyone:
+                if st.button(f"Show {'my' if ss.host_f == me or same_person(ENG['name'], ss.host_f) else ss.host_f + chr(39) + 's'} next 7 days",
+                             type="primary", icon=":material/date_range:", key="show_week", **FULL):
+                    ss.view = "Next 7 days"
+                    ss.pop("view_t", None)
+                    st.rerun()
+        if client and getattr(client, "users_error", "") and not users:
+            st.caption(":orange[Couldn't load staff names from Zoho just now, so hosts may be missing — "
+                       "tap Refresh in a moment.]")
 
     last_day = None
     for i, job in enumerate(shown):

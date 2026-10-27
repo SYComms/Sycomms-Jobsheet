@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 UK = ZoneInfo("Europe/London")
-CODE_VERSION = "2026-10-27.6"  # bump when this file changes
+CODE_VERSION = "2026-10-27.7"  # bump when this file changes
 
 
 class ZohoError(Exception):
@@ -66,6 +66,8 @@ class ZohoClient:
         self._token = None
         self._token_exp = 0.0
         self._users = None
+        self._users_until = 0.0
+        self.users_error = ""
 
     # ------------------------------------------------------------ plumbing
     @property
@@ -128,16 +130,23 @@ class ZohoClient:
 
     # ------------------------------------------------------------ users
     def users(self) -> dict:
-        """id -> {name, email}. Empty dict if the users scope is missing."""
-        if self._users is None:
+        """id -> {name, email}. Kept for an hour once loaded; if Zoho refuses (busy, or no
+        users permission) it's retried after 30 seconds rather than remembered as empty."""
+        now = time.time()
+        fresh = self._users is not None and now < self._users_until
+        if not fresh:
             try:
                 data = self._req("GET", "users", params={"type": "ActiveUsers", "per_page": 200})
                 self._users = {
-                    u["id"]: {"name": u.get("full_name", ""), "email": (u.get("email") or "").lower()}
+                    str(u["id"]): {"name": u.get("full_name", ""), "email": (u.get("email") or "").lower()}
                     for u in data.get("users", [])
                 }
-            except ZohoError:
-                self._users = {}
+                self._users_until = now + 3600
+                self.users_error = ""
+            except ZohoError as e:
+                self._users = self._users or {}
+                self._users_until = now + 30
+                self.users_error = str(e)
         return self._users
 
     # ------------------------------------------------------------ diary
@@ -227,7 +236,7 @@ class ZohoClient:
         users = self.users() if isinstance(v, dict) and not v.get("name") else {}
         if isinstance(v, dict):
             uid = v.get("id")
-            u = users.get(uid, {})
+            u = users.get(str(uid), {})
             return {"id": uid, "name": v.get("name") or u.get("name", ""),
                     "email": (v.get("email") or u.get("email", "")).lower()}
         if isinstance(v, str):
@@ -254,6 +263,7 @@ class ZohoClient:
             "hydrated": False,
         }
         people = [eng.get("name", "")]
+        people_ids = [str(eng["id"])] if eng.get("id") else []
         if is_ev:
             out["consultant"] = eng.get("name", "")
             out["booked_label"] = "Host"
@@ -262,12 +272,15 @@ class ZohoClient:
                 if not isinstance(pt, dict) or pt.get("type") not in ("user", None):
                     continue  # staff only — customer contacts/leads invited to a meeting aren't hosts
                 nm = pt.get("name") or ""
+                if pt.get("participant"):
+                    people_ids.append(str(pt.get("participant")))
                 if not nm and pt.get("type") == "user":
                     users = users if users is not None else self.users()
                     nm = users.get(str(pt.get("participant")), {}).get("name", "")
                 if nm:
                     people.append(nm)
         out["people"] = [p for p in dict.fromkeys(people) if p]
+        out["people_ids"] = list(dict.fromkeys(people_ids))
         return out
 
     # ------------------------------------------------------------ deals diary
