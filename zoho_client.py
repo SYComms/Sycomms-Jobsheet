@@ -146,7 +146,24 @@ class ZohoClient:
                 return [self._light(rec) for rec in data.get("data", [])]
             except ZohoError as e:
                 last_err = e
-        raise last_err
+        # Fallback when the token has no COQL scope: page through recent records and filter by day
+        try:
+            jobs = []
+            for page in range(1, 4):
+                data = self._req("GET", self.module, params={
+                    "fields": ",".join([f["title"], f["start"], f["end"], *f["extra"]]),
+                    "per_page": 200, "page": page, "sort_by": "Modified_Time", "sort_order": "desc"})
+                for rec in data.get("data", []) or []:
+                    try:
+                        if datetime.fromisoformat(rec.get(f["start"])).astimezone(UK).date() == day:
+                            jobs.append(self._light(rec))
+                    except (TypeError, ValueError):
+                        pass
+                if not (data.get("info") or {}).get("more_records"):
+                    break
+            return sorted(jobs, key=lambda j: j.get("start") or "")
+        except ZohoError:
+            raise last_err
 
     def _engineer_of(self, rec):
         v = rec.get(self.engineer_field)
@@ -293,6 +310,48 @@ class ZohoClient:
     def attach_file(self, account_id, filename, content: bytes, mime="application/pdf"):
         self._req("POST", f"Accounts/{account_id}/Attachments",
                   files={"file": (filename, content, mime)})
+
+    # ------------------------------------------------------------ email via Zoho
+    def from_addresses(self) -> list[dict]:
+        """Addresses Zoho lets us send from (org emails like hello@/support@ + the token user's)."""
+        data = self._req("GET", "settings/emails/actions/from_addresses")
+        out = []
+        for a in data.get("from_addresses", []) or []:
+            if a.get("email"):
+                out.append({"email": a["email"], "user_name": a.get("user_name") or a["email"],
+                            "type": a.get("type", ""), "default": bool(a.get("default"))})
+        return out
+
+    def upload_file(self, filename, content: bytes, mime="application/pdf") -> str:
+        """Upload to Zoho's file store; returns the encrypted file id used for email attachments."""
+        data = self._req("POST", "files", files={"file": (filename, content, mime)})
+        rows = data.get("data") or []
+        fid = rows[0].get("details", {}).get("id") if rows else None
+        if not fid:
+            raise ZohoError(f"Zoho didn't return a file id for {filename}.")
+        return fid
+
+    def send_mail(self, account_id, sender: dict, to: list[dict], subject: str, html: str,
+                  attachment_ids=(), cc: list[dict] | None = None):
+        """Send an email from the customer's Account record — Zoho logs it under the account's Emails."""
+        msg = {
+            "from": {"user_name": sender.get("user_name") or sender["email"], "email": sender["email"]},
+            "to": to,
+            "subject": subject,
+            "content": html,
+            "mail_format": "html",
+        }
+        if sender.get("type") == "org_email":
+            msg["org_email"] = True
+        if cc:
+            msg["cc"] = cc
+        if attachment_ids:
+            msg["attachments"] = [{"id": i} for i in attachment_ids]
+        data = self._req("POST", f"Accounts/{account_id}/actions/send_mail", json={"data": [msg]})
+        rows = data.get("data") or []
+        if rows and str(rows[0].get("status", "")).lower() == "error":
+            raise ZohoError(f"{rows[0].get('code')}: {rows[0].get('message')}")
+        return True
 
     def mark_completed(self, job_id):
         if self.is_events:

@@ -10,8 +10,9 @@ on screen → **Complete & sync job**.
 1. Builds a branded A4 PDF (customer copy + office copy).
 2. Adds a **Note** and the **PDF** (plus any site photos) to the customer's Zoho **Account**.
 3. Marks the Zoho **Appointment** as Completed.
-4. Emails the customer their copy and the office its copy (office subject gets flags like
-   `[FOLLOW-UP VISIT NEEDED]`, `[CHARGEABLE]`, `[NOT SIGNED BY CUSTOMER]`).
+4. Emails the customer their copy and the office its copy **through Zoho**, from the address the
+   engineer picks (hello@, support@ …). Both emails are logged under the account's Emails in Zoho.
+   The office subject gets flags like `[FOLLOW-UP VISIT NEEDED]`, `[CHARGEABLE]`, `[NOT SIGNED BY CUSTOMER]`.
 
 Wi-Fi passwords are never put in Zoho or the office copy; they only appear on the customer's copy
 if the engineer ticks the box.
@@ -37,13 +38,26 @@ Tip: set `demo_mode = true` first to try it with sample jobs before connecting Z
 Use a **Self Client** and generate a code with these scopes:
 
 ```
-ZohoCRM.modules.ALL,ZohoCRM.coql.READ,ZohoCRM.users.READ,ZohoCRM.settings.READ
+ZohoCRM.modules.ALL,ZohoCRM.coql.READ,ZohoCRM.users.READ,ZohoCRM.settings.emails.READ,ZohoCRM.send_mail.all.CREATE,ZohoCRM.Files.CREATE
 ```
+
+| Scope | Used for | If it's missing |
+|---|---|---|
+| `modules.ALL` | Reading appointments/accounts, notes, attachments, status | App can't work |
+| `send_mail.all.CREATE` | Sending the emails | Falls back to the backup [smtp] login, if set |
+| `Files.CREATE` | Attaching the PDF to the email | Same as above |
+| `settings.emails.READ` | Listing hello@ / support@ etc. | Uses the `allowed_from` list in Secrets instead |
+| `coql.READ` | Fast diary lookup | Slower fallback is used automatically |
+| `users.READ` | Matching "Only my jobs" by email | Add `zoho_user_id` per engineer in Secrets |
 
 Then swap the code for a refresh token (POST to
 `https://accounts.zoho.eu/oauth/v2/token?grant_type=authorization_code&client_id=…&client_secret=…&code=…`)
 and put `client_id`, `client_secret`, `refresh_token` in Secrets. You can reuse an existing refresh
-token from another app if it already has these scopes.
+token from another app (e.g. the Prospect Engine one) — the table shows what happens if a scope is
+missing, so you can try it first and only regenerate if needed.
+
+**Sending addresses:** hello@ and support@ must be set up in Zoho CRM as *Organization Emails*
+(Setup → Channels → Email → Organization Emails) and verified — the same ones your other apps send from.
 
 **Where the jobs come from**
 - Default: Zoho CRM **Appointments** module (`Appointments__s`). The appointment's *Appointment For*

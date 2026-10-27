@@ -899,6 +899,21 @@ def sheet_screen():
                 help="The office copy and the Zoho copy never show Wi-Fi passwords.")
         chk("email_office", f"Email the office ({BRAND['office_email'] or 'not set up'})",
             disabled=not BRAND["office_email"])
+        if F.get("email_customer") or F.get("email_office"):
+            senders, sender_err = sender_options()
+            if senders:
+                emails = [x["email"] for x in senders]
+                if F.get("send_from") not in emails:
+                    F["send_from"] = default_sender(emails)
+                F["send_from"] = st.selectbox(
+                    "Send emails from", emails, index=emails.index(F["send_from"]), key=wkey("send_from"),
+                    format_func=lambda e: next((f"{x['user_name']} <{e}>" for x in senders
+                                                if x["email"] == e and x["user_name"] != e), e))
+                if not linked:
+                    st.caption(":orange[This job isn't linked to a Zoho account, so Zoho can't send it"
+                               + (" — it will go via the backup email instead.]" if secret("smtp") else ".]"))
+            elif sender_err:
+                st.caption(f":orange[Couldn't load Zoho sending addresses: {sender_err}]")
         chk("save_zoho", "Save PDF + notes to the customer's Zoho account", disabled=not linked)
         appt = job.get("module") not in ("Demo", "Manual") and not DEMO
         if appt and not zoho_client().is_events:
@@ -962,6 +977,61 @@ def note_text(d):
               "Signed by customer: " + ("NOT SIGNED – " + (d.get("unavailable_reason") or "")
                                         if d.get("cust_unavailable") else (d.get("cust_sign_name") or "-"))]
     return "\n".join(lines)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _zoho_from_addresses(_client):
+    return _client.from_addresses()
+
+
+def sender_options():
+    """(list of {email,user_name,type}, error). Zoho's list, narrowed to [email] allowed_from if set."""
+    allowed = [a.lower() for a in (secret("email", "allowed_from", []) or [])]
+    err, addrs = None, []
+    if not DEMO and zoho_client():
+        try:
+            addrs = _zoho_from_addresses(zoho_client())
+        except ZohoError as e:
+            err = str(e)
+    if allowed:
+        if addrs:
+            addrs = [a for a in addrs if a["email"].lower() in allowed]
+        else:  # token can't list addresses: trust the configured list (organisation emails)
+            addrs = [{"email": a, "user_name": BRAND["name"], "type": "org_email"} for a in allowed]
+    if not addrs and secret("smtp"):
+        cfg = secret("smtp")
+        addrs = [{"email": cfg.get("from_email", cfg.get("user")), "user_name": cfg.get("from_name", BRAND["name"]),
+                  "type": "smtp"}]
+    return addrs, err
+
+
+def default_sender(emails):
+    for cand in (ENG.get("send_as"), secret("email", "default_from")):
+        if cand and cand in emails:
+            return cand
+    return emails[0]
+
+
+def deliver(to_email, to_name, subject, html, text, attachments, linked):
+    """Send via Zoho (logged on the account). Falls back to the backup SMTP login if set up."""
+    senders, _ = sender_options()
+    sender = next((x for x in senders if x["email"] == F.get("send_from")), senders[0] if senders else None)
+    zoho_err = None
+    if linked and sender and sender.get("type") != "smtp":
+        try:
+            z = zoho_client()
+            ids = [z.upload_file(name, data, f"{mt}/{sub}") for name, data, mt, sub in attachments]
+            z.send_mail(ss.job["account_id"], sender, [{"user_name": to_name or to_email, "email": to_email}],
+                        subject, html, ids)
+            return f"{to_email} — sent from {sender['email']} via Zoho"
+        except ZohoError as e:
+            zoho_err = str(e)
+    if secret("smtp"):
+        send_email(to_email, subject, html, text, attachments)
+        return f"{to_email} — sent via backup email" + (f" (Zoho said: {zoho_err})" if zoho_err else "")
+    if zoho_err:
+        raise RuntimeError(zoho_err)
+    raise RuntimeError("Not linked to a Zoho account, and no backup email is set up.")
 
 
 def send_email(to, subject, body_html, body_text, attachments):
@@ -1041,6 +1111,7 @@ def office_email(d):
 def do_sync():
     d = _pdf_fields()
     job = ss.job
+    linked = bool(job.get("account_id")) and job.get("module") != "Demo" and not DEMO
     photos = prepare_photos()
     steps = []
     with st.status("Completing job…", expanded=True) as status:
@@ -1079,9 +1150,10 @@ def do_sync():
             st.write("Emailing the customer…")
             try:
                 h, t = customer_email(d)
-                send_email(d["contact_email"].strip(), f"Your {BRAND['name']} job sheet – {ref}", h, t,
-                           [(fname, cust_pdf, "application", "pdf")])
-                steps.append(("Customer emailed", True, d["contact_email"]))
+                where = deliver(d["contact_email"].strip(), d.get("contact_name"),
+                                f"Your {BRAND['name']} job sheet – {ref}", h, t,
+                                [(fname, cust_pdf, "application", "pdf")], linked)
+                steps.append(("Customer emailed", True, where))
             except Exception as e:
                 steps.append(("Customer emailed", False, str(e)))
         else:
@@ -1096,8 +1168,8 @@ def do_sync():
                 if flags:
                     subj = f"[{flags[0]}] " + subj
                 atts = [(fname, office_pdf, "application", "pdf")]
-                send_email(BRAND["office_email"], subj, h, t, atts)
-                steps.append(("Office emailed", True, BRAND["office_email"]))
+                where = deliver(BRAND["office_email"], "Office", subj, h, t, atts, linked)
+                steps.append(("Office emailed", True, where))
             except Exception as e:
                 steps.append(("Office emailed", False, str(e)))
         else:
