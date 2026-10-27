@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 UK = ZoneInfo("Europe/London")
-CODE_VERSION = "2026-10-27.3"  # bump when this file changes
+CODE_VERSION = "2026-10-27.4"  # bump when this file changes
 
 
 class ZohoError(Exception):
@@ -50,6 +50,12 @@ class ZohoClient:
         self.api_domain = cfg.get("api_domain", "https://www.zohoapis.eu").rstrip("/")
         self.version = cfg.get("api_version", "v6")
         self.module = cfg.get("appointments_module", "Deals")
+        # Diary sources read side by side. Default: Deals (like the Upgrade Tracker) + Meetings.
+        src = cfg.get("diary_sources")
+        if not src:
+            src = ["Deals", "Events"] if self.module.lower() in ("deals", "events", "meetings") else [self.module]
+        self.sources = [("Events" if m.lower() == "meetings" else m) for m in src]
+        self.last_warnings = []
         self.engineer_field = cfg.get("engineer_field", "Owner")
         self.completed_status = cfg.get("completed_status", "Completed")
         # Deals diary (same as the Upgrade Tracker): the date/time field on the Deal,
@@ -64,15 +70,17 @@ class ZohoClient:
     # ------------------------------------------------------------ plumbing
     @property
     def is_events(self) -> bool:
-        return self.module.lower() in ("events", "meetings")
+        return self.sources == ["Events"]
 
     @property
     def is_deals(self) -> bool:
-        return self.module.lower() == "deals"
+        """True when the diary includes Deals/Meetings, whose owner is whoever booked it
+        (not the engineer), so 'Only my jobs' doesn't apply."""
+        return any(m in ("Deals", "Events") for m in self.sources)
 
-    @property
-    def can_mark_complete(self) -> bool:
-        return not (self.is_events or self.is_deals)
+    @staticmethod
+    def can_mark_complete_job(job) -> bool:
+        return (job or {}).get("module") == "Appointments__s"
 
     def _access_token(self) -> str:
         if self._token and time.time() < self._token_exp - 60:
@@ -133,10 +141,10 @@ class ZohoClient:
         return self._users
 
     # ------------------------------------------------------------ diary
-    def _fields(self):
-        if self.is_events:
+    def _fields(self, module):
+        if module == "Events":
             return dict(title="Event_Title", start="Start_DateTime", end="End_DateTime",
-                        extra=["Owner", "What_Id", "Venue"])
+                        extra=["Owner", "What_Id", "Who_Id", "Venue", "Description"])
         extra = ["Owner", "Status", "Appointment_For"]
         if self.engineer_field not in extra:
             extra.append(self.engineer_field)
@@ -144,46 +152,65 @@ class ZohoClient:
                     end="Appointment_End_Time", extra=extra)
 
     def list_jobs(self, day: date) -> list[dict]:
-        if self.is_deals:
-            return [j for j in self._all_deal_jobs() if j["day"] == day.isoformat()]
-        f = self._fields()
+        """All diary entries for the day across every source. One source failing doesn't
+        hide the others — its error is kept in last_warnings."""
+        jobs, errors = [], []
+        for module in self.sources:
+            try:
+                if module == "Deals":
+                    jobs += [j for j in self._all_deal_jobs() if j["day"] == day.isoformat()]
+                else:
+                    jobs += self._list_module(day, module)
+            except ZohoError as e:
+                errors.append(f"{'Meetings' if module == 'Events' else module}: {e}")
+        self.last_warnings = errors
+        if errors and len(errors) == len(self.sources):
+            raise ZohoError(" | ".join(errors))
+        return sorted(jobs, key=lambda j: j.get("start") or "")
+
+    def _list_module(self, day, module):
+        f = self._fields(module)
         start = datetime.combine(day, dtime(0, 0), UK).isoformat()
         end = datetime.combine(day, dtime(23, 59, 59), UK).isoformat()
-        where = f"{f['start']} between '{start}' and '{end}'"
-        tail = f"from {self.module} where {where} order by {f['start']} asc limit 200"
-        selects = [
-            ["id", f["title"], f["start"], f["end"], *f["extra"]],
-            ["id", f["title"], f["start"], f["end"], "Owner"],
-        ]
-        last_err = None
-        for cols in selects:
+        errs = []
+        # 1) COQL (needs ZohoCRM.coql.READ)
+        tail = f"from {module} where {f['start']} between '{start}' and '{end}' order by {f['start']} asc limit 200"
+        for cols in (["id", f["title"], f["start"], f["end"], *f["extra"]], ["id", f["title"], f["start"], f["end"], "Owner"]):
             try:
                 data = self._req("POST", "coql", json={"select_query": f"select {', '.join(cols)} {tail}"})
-                return [self._light(rec) for rec in data.get("data", [])]
+                return [self._light(rec, module) for rec in data.get("data", []) or []]
             except ZohoError as e:
-                last_err = e
-        # Fallback when the token has no COQL scope: page through recent records and filter by day
+                errs.append(str(e))
+        # 2) Search API (only needs the module scope)
+        try:
+            crit = f"(({f['start']}:greater_equal:{start})and({f['start']}:less_equal:{end}))"
+            data = self._req("GET", f"{module}/search", params={"criteria": crit, "per_page": 200})
+            return sorted([self._light(rec, module) for rec in data.get("data", []) or []],
+                          key=lambda j: j.get("start") or "")
+        except ZohoError as e:
+            errs.append(str(e))
+        # 3) Plain list of recently changed records, filtered by day
         try:
             jobs = []
-            for page in range(1, 4):
-                data = self._req("GET", self.module, params={
+            for page in range(1, 6):
+                data = self._req("GET", module, params={
                     "fields": ",".join([f["title"], f["start"], f["end"], *f["extra"]]),
                     "per_page": 200, "page": page, "sort_by": "Modified_Time", "sort_order": "desc"})
                 for rec in data.get("data", []) or []:
                     try:
                         if datetime.fromisoformat(rec.get(f["start"])).astimezone(UK).date() == day:
-                            jobs.append(self._light(rec))
+                            jobs.append(self._light(rec, module))
                     except (TypeError, ValueError):
                         pass
                 if not (data.get("info") or {}).get("more_records"):
                     break
             return sorted(jobs, key=lambda j: j.get("start") or "")
-        except ZohoError as e2:
-            raise ZohoError(f"{e2}  (quick lookup also failed: {last_err})")
+        except ZohoError as e:
+            raise ZohoError(f"{e}  (other lookups also failed: {errs[-1] if errs else ''})")
 
     def _engineer_of(self, rec):
         v = rec.get(self.engineer_field)
-        users = self.users()
+        users = self.users() if isinstance(v, dict) and not v.get("name") else {}
         if isinstance(v, dict):
             uid = v.get("id")
             u = users.get(uid, {})
@@ -193,23 +220,29 @@ class ZohoClient:
             return {"id": None, "name": v, "email": ""}
         return {"id": None, "name": "", "email": ""}
 
-    def _light(self, rec):
-        f = self._fields()
-        link = rec.get("What_Id") if self.is_events else rec.get("Appointment_For")
-        status = rec.get("Status") or ""
+    def _light(self, rec, module):
+        f = self._fields(module)
+        is_ev = module == "Events"
+        link = rec.get("What_Id") if is_ev else rec.get("Appointment_For")
+        status = "Meeting" if is_ev else (rec.get("Status") or "")
         if isinstance(status, dict):
             status = status.get("name", "")
-        return {
+        eng = self._engineer_of(rec)
+        out = {
             "id": rec.get("id"),
-            "module": self.module,
+            "module": module,
             "title": rec.get(f["title"]) or "(untitled job)",
             "start": rec.get(f["start"]),
             "end": rec.get(f["end"]),
             "status": status,
-            "engineer": self._engineer_of(rec),
-            "for_name": _lookup_name(link),
+            "engineer": eng,
+            "for_name": _lookup_name(link) or (_lookup_name(rec.get("Who_Id")) if is_ev else ""),
             "hydrated": False,
         }
+        if is_ev:
+            out["consultant"] = eng.get("name", "")
+            out["booked_label"] = "Booked by"
+        return out
 
     # ------------------------------------------------------------ deals diary
     def _all_deal_jobs(self) -> list[dict]:
@@ -262,6 +295,7 @@ class ZohoClient:
                 "engineer": {"id": owner.get("id"), "name": owner.get("name", ""),
                              "email": (owner.get("email") or "").lower()},
                 "consultant": owner.get("name", ""),
+                "booked_label": "Consultant",
                 "for_name": acc.get("name", "") if isinstance(acc, dict) else "",
                 "account_id": _lookup_id(acc),
                 "contact_id": _lookup_id(r.get("Contact_Name")),
@@ -289,21 +323,21 @@ class ZohoClient:
             job.setdefault("account_name", job.get("for_name", ""))
             job["hydrated"] = True
             return job
-        rec = self._get_record(self.module, job["id"])
+        module = job.get("module") or self.module
+        is_ev = module == "Events"
+        rec = self._get_record(module, job["id"])
         job = dict(job)
-        f = self._fields()
+        f = self._fields(module)
         job["title"] = rec.get(f["title"]) or job.get("title")
         job["start"] = rec.get(f["start"]) or job.get("start")
         job["end"] = rec.get(f["end"]) or job.get("end")
         job["notes"] = rec.get("Remarks") or rec.get("Description") or ""
-        svc = rec.get("Service_Name")
-        job["service"] = _lookup_name(svc)
-        addr = rec.get("Address") if not self.is_events else rec.get("Venue")
+        job["service"] = _lookup_name(rec.get("Service_Name"))
+        addr = rec.get("Venue") if is_ev else rec.get("Address")
         job["appt_address"] = addr if isinstance(addr, str) else ""
 
-        if self.is_events:
-            link, mod = rec.get("What_Id"), rec.get("$se_module")
-            who = rec.get("Who_Id")
+        if is_ev:
+            link, mod, who = rec.get("What_Id"), rec.get("$se_module"), rec.get("Who_Id")
         else:
             link = rec.get("Appointment_For")
             mod = rec.get("$se_module") or rec.get("$appointment_for_module")
@@ -324,10 +358,16 @@ class ZohoClient:
                 cid = _lookup_id(deal.get("Contact_Name"))
                 if cid:
                     contact = self._get_record("Contacts", cid)
+            elif mod == "Leads":
+                job.update(self.lead_details(lid))
+                job["hydrated"] = True
+                return job
             else:  # Accounts (or unknown -> assume account)
                 account_id = lid
         if not contact and _lookup_id(who):
             contact = self._get_record("Contacts", _lookup_id(who))
+            if not account_id:
+                account_id = _lookup_id(contact.get("Account_Name"))
 
         if account_id:
             job.update(self.account_details(account_id, contact))
@@ -336,6 +376,19 @@ class ZohoClient:
             job["account_name"] = _lookup_name(contact.get("Account_Name")) or job.get("for_name", "")
         job["hydrated"] = True
         return job
+
+    def lead_details(self, lead_id) -> dict:
+        """A meeting booked against a Lead (not yet a customer). Job sheet notes/emails go on the Lead."""
+        ld = self._get_record("Leads", lead_id)
+        name = ld.get("Full_Name") or " ".join(x for x in [ld.get("First_Name"), ld.get("Last_Name")] if x)
+        street = ", ".join(x.strip() for x in [ld.get("Street") or "", ld.get("City") or "", ld.get("State") or ""] if x and x.strip())
+        return {
+            "record_module": "Leads", "record_id": lead_id,
+            "account_name": ld.get("Company") or name, "account_number": "",
+            "address": street, "postcode": (ld.get("Zip_Code") or "").strip(),
+            "contact_name": name or "", "contact_phone": ld.get("Mobile") or ld.get("Phone") or "",
+            "contact_email": ld.get("Email") or "",
+        }
 
     def _contact_fields(self, c):
         name = c.get("Full_Name") or " ".join(x for x in [c.get("First_Name"), c.get("Last_Name")] if x)
@@ -357,6 +410,7 @@ class ZohoClient:
         if not site:
             site, pc = addr("Billing")
         out = {
+            "record_module": "Accounts", "record_id": account_id,
             "account_id": account_id,
             "account_name": acc.get("Account_Name", ""),
             "account_number": acc.get("Account_Number") or "",
@@ -395,12 +449,12 @@ class ZohoClient:
         return res
 
     # ------------------------------------------------------------ write back
-    def add_note(self, account_id, title, content):
-        self._req("POST", f"Accounts/{account_id}/Notes",
+    def add_note(self, account_id, title, content, module="Accounts"):
+        self._req("POST", f"{module}/{account_id}/Notes",
                   json={"data": [{"Note_Title": title[:120], "Note_Content": content}]})
 
-    def attach_file(self, account_id, filename, content: bytes, mime="application/pdf"):
-        self._req("POST", f"Accounts/{account_id}/Attachments",
+    def attach_file(self, account_id, filename, content: bytes, mime="application/pdf", module="Accounts"):
+        self._req("POST", f"{module}/{account_id}/Attachments",
                   files={"file": (filename, content, mime)})
 
     # ------------------------------------------------------------ email via Zoho
@@ -424,7 +478,7 @@ class ZohoClient:
         return fid
 
     def send_mail(self, account_id, sender: dict, to: list[dict], subject: str, html: str,
-                  attachment_ids=(), cc: list[dict] | None = None):
+                  attachment_ids=(), cc: list[dict] | None = None, module="Accounts"):
         """Send an email from the customer's Account record — Zoho logs it under the account's Emails."""
         msg = {
             "from": {"user_name": sender.get("user_name") or sender["email"], "email": sender["email"]},
@@ -439,16 +493,16 @@ class ZohoClient:
             msg["cc"] = cc
         if attachment_ids:
             msg["attachments"] = [{"id": i} for i in attachment_ids]
-        data = self._req("POST", f"Accounts/{account_id}/actions/send_mail", json={"data": [msg]})
+        data = self._req("POST", f"{module}/{account_id}/actions/send_mail", json={"data": [msg]})
         rows = data.get("data") or []
         if rows and str(rows[0].get("status", "")).lower() == "error":
             raise ZohoError(f"{rows[0].get('code')}: {rows[0].get('message')}")
         return True
 
-    def mark_completed(self, job_id):
-        if not self.can_mark_complete:
+    def mark_completed(self, job_id, module="Appointments__s"):
+        if module != "Appointments__s":
             return False  # Meetings have no status field – note + attachment is enough
-        self._req("PUT", f"{self.module}/{job_id}",
+        self._req("PUT", f"Appointments__s/{job_id}",
                   json={"data": [{"Status": self.completed_status}]})
         return True
 

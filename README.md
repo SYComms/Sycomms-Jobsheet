@@ -2,6 +2,9 @@
 
 Mobile-first web app that replaces the paper Installation Job Sheet.
 
+**Theme:** always the dark SY Comms design with green selections, whatever the phone or browser is set to
+(make sure the hidden `.streamlit` folder with `config.toml` is uploaded to GitHub too).
+
 **Engineer flow:** log in with the shared app password + their name → see today's jobs from Zoho → open one (customer, address,
 contact, email and office notes are pre-filled) → tap through the sheet → customer and engineer sign
 on screen → **Complete & sync job**.
@@ -59,14 +62,17 @@ missing, so you can try it first and only regenerate if needed.
 **Sending addresses:** hello@ and support@ must be set up in Zoho CRM as *Organization Emails*
 (Setup → Channels → Email → Organization Emails) and verified — the same ones your other apps send from.
 
-**Where the jobs come from**
-- Default: Zoho **Deals**, read exactly like the Upgrade Tracker — each deal's `Appt_Date_Time`
-  is a diary entry, only deals owned by @sycomms.co.uk staff are shown (Deals also holds SY Plus).
-  The engineer picks the one they're attending; the customer details come from the deal's Account
-  and Contact. Day view or "Next 7 days". The chip shows the sales consultant on the deal.
-- Prefer Zoho's Appointments or Meetings modules instead? Set `appointments_module` to
-  `"Appointments__s"` or `"Events"` (those also support "Only my jobs" and marking complete).
-- Not in the diary? Engineers can search any Zoho account, or start a blank sheet.
+**Where the jobs come from** — `diary_sources` in Secrets (default: Deals + Meetings)
+- **Deals**, read exactly like the Upgrade Tracker: each deal's `Appt_Date_Time` is a diary entry, only
+  deals owned by @sycomms.co.uk staff (Deals also holds SY Plus). Chip shows the sales consultant.
+- **Meetings** booked in Zoho, shown as "Meeting · Booked by …". A meeting can be linked to an Account,
+  Contact, Deal or Lead — the app finds the customer either way. If it isn't linked to anything, the
+  sheet shows a "Link this job to a Zoho account" search so the job sheet still lands on the right account.
+  Meetings booked against a **Lead** are saved to (and emailed from) that Lead.
+- Day view or "Next 7 days". If one source can't be read, the others still show with a warning.
+- Using Zoho's Appointments module instead? Add `"Appointments__s"` to `diary_sources`
+  (it also supports "Only my jobs" and marking the appointment completed).
+- Not in the diary at all? Engineers can search any Zoho account, or start a blank sheet.
 
 ## Good to know
 - Unfinished sheets auto-save as you go, so if an engineer loses signal or closes the page, reopening

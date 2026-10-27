@@ -72,9 +72,13 @@ SOFTWARE = ["Horizon Collaborate", "Horizon Integrator", "3CX app", "Yealink USB
 FEATURES = ["Voicemail", "Voicemail to email", "Call groups / hunt groups", "Auto-attendant / IVR",
             "Call recording", "Out-of-hours routing", "Call queues", "Music on hold", "Call Scope"]
 BB_TYPES = ["Full Fibre (FTTP)", "Fibre to cabinet (FTTC)", "SoGEA", "Ethernet leased line", "4G / 5G", "Other"]
+# Broadband packages — same list as the SY Comms pricebook (quoting app). Keep in step with it.
+BB_PACKAGES = ["FTTP 40/10 Unlimited", "FTTP 80/20 Unlimited", "FTTP 115/20 Unlimited", "FTTP 160/30 Unlimited",
+               "FTTP 220/30 Unlimited", "FTTP 330/50 Unlimited", "FTTP 550/75 Unlimited", "FTTP 1000/115 Unlimited",
+               "SOGEA 40/10 Unlimited", "SOGEA 80/20 Unlimited", "Leased Line / Other"]
 PROVIDERS = ["SY", "Gamma", "BT Wholesale", "TalkTalk Business", "Zen", "Openreach (via SY)", "Customer's own"]
-ROUTERS = ["DrayTek Vigor 2927", "DrayTek Vigor 2865", "DrayTek Vigor 2866", "DrayTek Vigor 2962",
-           "Zyxel", "Technicolor", "Ubiquiti UniFi", "Customer's own router"]
+ROUTERS = ["Draytek Vigor 2927 (FTTP/SoGEA)", "Draytek 2927LAC (FTTP/Leased Line)", "Grandstream GWN7062E (FTTP)",
+           "Zyxel DX Series (FTTP)", "TP Link NX200 (4G/5G)", "Customer's own router"]  # pricebook routers
 NETWORK_CHECKS = ["Internet working", "Wi-Fi tested", "Wired connection tested", "Speed test completed"]
 CALL_TESTS = ["Inbound", "Outbound", "Internal", "Emergency call process explained"]
 FAULT_CATEGORIES = ["No inbound calls", "No outbound calls", "No dial tone / handsets offline", "Call quality / one-way audio",
@@ -162,6 +166,47 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 [data-testid="stCheckbox"] label p{font-size:.92rem}
 /* pills + segmented: bigger tap targets */
 [data-testid="stButtonGroup"] button{min-height:38px;border-radius:999px!important}
+/* Selected options (Yes/No, features, etc.) highlight GREEN */
+[data-testid="stButtonGroup"] button[data-selected="true"]{background:rgba(52,211,153,.16)!important;border-color:var(--good)!important;color:var(--good)!important;box-shadow:0 0 0 1px rgba(52,211,153,.35) inset}
+[data-testid="stButtonGroup"] button[data-selected="true"] *{color:var(--good)!important}
+[data-testid="stButtonGroup"] button:not([data-selected="true"]){background:var(--surface)!important;border-color:var(--border-strong)!important;color:var(--text)!important}
+[data-testid="stButtonGroup"] button:not([data-selected="true"]) *{color:var(--text)!important}
+/* Force the dark palette even if a browser/theme setting tries to go light */
+html,body,.stApp{color-scheme:dark}
+.stApp,.stApp p,.stApp label,.stApp li,[data-testid="stMarkdownContainer"]{color:var(--text)}
+input,textarea,[data-baseweb="select"] *{color:var(--text)!important;-webkit-text-fill-color:var(--text)}
+input::placeholder,textarea::placeholder{color:var(--faint)!important;-webkit-text-fill-color:var(--faint)}
+[data-baseweb="popover"] [role="listbox"],[data-baseweb="popover"] ul,[data-baseweb="menu"]{background:var(--surface-2)!important}
+[data-baseweb="popover"] li{color:var(--text)!important}
+[data-baseweb="popover"] li[aria-selected="true"],[data-baseweb="popover"] li:hover{background:var(--surface-3)!important}
+[data-baseweb="calendar"],[data-baseweb="calendar"] *{background-color:var(--surface-2);color:var(--text)}
+/* Ticked checkboxes + switched-on toggles: GREEN (never Streamlit's default red) */
+[data-testid="stCheckbox"] label[data-selected="true"] > div:first-of-type,[data-testid="stCheckbox"] label:has(input:checked) > div:first-of-type{background:var(--good)!important;border-color:var(--good)!important}
+[data-testid="stCheckbox"] label[data-selected="true"] > div:first-of-type svg{color:#0A0E1A!important;stroke:#0A0E1A!important}
+[data-testid="stCheckbox"] label:not([data-selected="true"]):not(:has(input[role="switch"])) > div:first-of-type{background:var(--surface)!important;border-color:var(--border-strong)!important}
+label[data-selected="true"]:has(input[role="switch"]) > div:first-of-type,label:has(input[role="switch"]:checked) > div:first-of-type{background:var(--good)!important;border-color:var(--good)!important}
+label:not([data-selected="true"]):has(input[role="switch"]) > div:first-of-type{background:var(--surface-3)!important}
+/* Dropdown lists (select / multiselect) */
+[data-testid="stSelectboxVirtualDropdown"],[data-testid="stMultiSelectVirtualDropdown"],[role="listbox"]{background:var(--surface-2)!important;color:var(--text)!important}
+[role="option"]{color:var(--text)!important;background:transparent}
+[role="option"]:hover,[role="option"][aria-selected="true"],[role="option"][data-focused="true"]{background:var(--surface-3)!important}
+[data-baseweb="tag"],[data-testid="stMultiSelectTagsContainer"] > span{background:rgba(52,211,153,.16)!important;color:var(--good)!important;border:1px solid rgba(52,211,153,.4)!important}
+[data-baseweb="tag"] *,[data-testid="stMultiSelectTagsContainer"] > span *{color:var(--good)!important;background:transparent!important}
+[data-testid="stMultiSelectTagsContainer"] > span,[data-testid="stMultiSelectTagsContainer"] > span > *:first-child{background-color:rgba(52,211,153,.16)!important;border-radius:8px}
+/* Icons inside inputs (dropdown arrows, +/-, show-password eye) */
+[data-testid="stSelectbox"] svg,[data-testid="stMultiSelect"] svg,[data-testid="stDateInputField"] svg,[data-testid="stTextInputRootElement"] svg{color:var(--muted)!important}
+[data-testid^="stNumberInputStep"]{color:var(--text)!important;background:transparent!important;opacity:.85}
+[data-testid^="stNumberInputStep"]:disabled{opacity:.3}
+[data-testid^="stNumberInputStep"]:not(:disabled):hover{color:var(--text)!important;background:var(--surface-3)!important}
+/* Photo upload box */
+[data-testid="stFileUploaderDropzone"]{background:var(--surface)!important;border:1px dashed var(--border-strong)!important;border-radius:12px!important}
+[data-testid="stFileUploaderDropzone"] button{background:var(--surface-2)!important;color:var(--text)!important;border:1px solid var(--border-strong)!important}
+[data-testid="stFileUploaderDropzone"] *{color:var(--muted)}
+[data-testid="stFileUploaderDropzone"] button *{color:var(--text)!important}
+[data-testid="stFileUploaderFile"] *{color:var(--text)}
+/* Alerts / status box stay readable */
+[data-testid="stAlert"] *{color:var(--text)!important}
+[data-testid="stExpander"] summary *{color:var(--text)!important}
 /* hero */
 .pe-hero{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;padding:4px 2px 18px;margin-bottom:16px;border-bottom:1px solid var(--border)}
 .pe-eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:.7rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--accent-2);margin-bottom:8px}
@@ -382,6 +427,29 @@ def chk(n, label, default=False, **kw):
     return F[n]
 
 
+def _package_chosen():
+    """Package picked: fill in broadband type, provider and expected speeds from its name (e.g. 'FTTP 80/20')."""
+    F = ss.F  # always the current sheet
+    pkg = ss.get(wkey("package")) or ""
+    F["package"] = pkg
+    up = pkg.upper()
+    if up.startswith("FTTP"):
+        F["bb_type"] = "Full Fibre (FTTP)"
+    elif up.startswith("SOGEA"):
+        F["bb_type"] = "SoGEA"
+    elif up.startswith("FTTC"):
+        F["bb_type"] = "Fibre to cabinet (FTTC)"
+    elif "LEASED" in up or "ETHERNET" in up:
+        F["bb_type"] = "Ethernet leased line"
+    m = re.search(r"(\d+)\s*/\s*(\d+)", pkg)
+    if m:
+        F["exp_down"], F["exp_up"] = int(m.group(1)), int(m.group(2))
+    if pkg in BB_PACKAGES and not F.get("provider"):
+        F["provider"] = "SY"
+    for k in ("bb_type", "exp_down", "exp_up", "provider"):
+        ss.pop(wkey(k), None)  # redraw those boxes with the new values
+
+
 def set_now(n):
     F[n] = datetime.now(UK).strftime("%H:%M")
     ss.pop(wkey(n), None)
@@ -497,8 +565,20 @@ ENG = ss.engineer
 #  JOB LIST
 # =====================================================================
 @st.cache_data(ttl=120, show_spinner=False)
-def fetch_jobs(day_iso: str, _client, module: str):
-    return _client.list_jobs(date.fromisoformat(day_iso))
+def fetch_jobs(day_iso: str, _client, sources: str):
+    jobs = _client.list_jobs(date.fromisoformat(day_iso))
+    return jobs, list(_client.last_warnings)
+
+
+def job_record(job):
+    """(module, id) of the Zoho record the job sheet is saved to — an Account, or a Lead."""
+    job = job or {}
+    rid = job.get("record_id") or job.get("account_id")
+    return (job.get("record_module") or "Accounts"), rid
+
+
+def is_linked(job):
+    return bool(job_record(job)[1]) and (job or {}).get("module") != "Demo" and not DEMO
 
 
 def is_mine(job):
@@ -622,18 +702,22 @@ def jobs_screen():
         ss.mine = mine
 
     days = [day] if view == "Day" else [day + timedelta(days=i) for i in range(7)]
-    jobs, err = [], None
+    jobs, err, warns = [], None, set()
     for d in days:
         if DEMO:
             jobs += demo_jobs(d, ENG["name"])
             continue
         try:
-            jobs += fetch_jobs(d.isoformat(), client, client.module)
+            got, w = fetch_jobs(d.isoformat(), client, ",".join(client.sources))
+            jobs += got
+            warns.update(w)
         except ZohoError as e:
             err = str(e)
             break
     if err:
         st.error(f"Couldn't load the diary from Zoho. {err}")
+    for w in sorted(warns):
+        st.warning(f"Part of the diary couldn't be loaded — {w}")
 
     shown = [j for j in jobs if is_mine(j)] if mine else jobs
     hidden = len(jobs) - len(shown)
@@ -672,9 +756,13 @@ def jobs_screen():
             chips = chip(job.get("status") or "Booked", "accent")
             if done:
                 chips = chip("Job sheet sent", "good")
+            if job.get("module") == "Events":
+                chips = chip("Meeting", "accent") if not done else chips
+            elif job.get("module") == "Deals" and not done:
+                chips = chip(job.get("status") or "Deal", "accent")
             who = job.get("consultant") or ((job.get("engineer") or {}).get("name") if not mine else "")
             if who:
-                chips += chip(("Consultant: " if job.get("consultant") else "") + who)
+                chips += chip((f"{job.get('booked_label', 'Consultant')}: " if job.get("consultant") else "") + who)
             title = job["title"]
             cust = job.get("for_name") or job.get("account_name") or ""
             render_html(f'<div class="job-time">{esc(t)}</div><div class="job-title">{esc(title)}</div>'
@@ -766,7 +854,7 @@ def problems():
 
 def sheet_screen():
     job = ss.job
-    linked = bool(job.get("account_id")) and job.get("module") != "Demo" and not DEMO
+    linked = is_linked(job)
     top1, top2 = st.columns([1, 2.4], vertical_alignment="center")
     with top1:
         if st.button("My jobs", icon=":material/arrow_back:", **FULL):
@@ -784,6 +872,27 @@ def sheet_screen():
 
     if job.get("notes"):
         render_html(f'<div class="pe-note"><b>Office notes for this job</b>{esc(job["notes"])}</div>')
+
+    if not linked and not DEMO and zoho_client():
+        with st.expander("Link this job to a Zoho account", icon=":material/link:", expanded=True):
+            st.caption("This booking isn't linked to a customer in Zoho. Find the account so the job sheet, "
+                       "notes and emails are saved against it.")
+            default_term = F.get("customer_name") or job.get("for_name") or ""
+            term = st.text_input("Search Zoho accounts", value=default_term, key=wkey("link_search"),
+                                 placeholder="Company name…")
+            if term and len(term.strip()) >= 2:
+                try:
+                    found = zoho_client().search_accounts(term)
+                except ZohoError as e:
+                    found = []
+                    st.error(str(e))
+                if not found:
+                    st.caption("No matching accounts — try a shorter part of the name.")
+                for a in found[:8]:
+                    label = a["name"] + (f"  ·  {a['number']}" if a["number"] else "") + (f"  ·  {a['postcode']}" if a["postcode"] else "")
+                    if st.button(label, key=wkey(f"link_{a['id']}"), icon=":material/add_link:", **FULL):
+                        link_account(a["id"])
+                        st.rerun()
 
     # ---------------- 01 customer
     with st.container(key="card-s1"):
@@ -879,14 +988,20 @@ def sheet_screen():
     if "Broadband & network" in covered:
         with st.container(key="card-s4"):
             section_header(f"{n:02d}", "Broadband & network")
+            # Package first — picking one fills in type, provider and expected speeds
+            opts = list(BB_PACKAGES)
+            cur = F.get("package")
+            if cur and cur not in opts:
+                opts.append(cur)
+            F["package"] = st.selectbox(
+                "Broadband package (from the pricebook)", opts, index=opts.index(cur) if cur in opts else None,
+                key=wkey("package"), placeholder="Choose the package, or type another",
+                accept_new_options=True, on_change=_package_chosen)
             one("bb_type", "Broadband type", BB_TYPES)
             if F.get("bb_type") == "Other":
                 txt("bb_type_other", "Other broadband type")
-            c1, c2 = st.columns(2)
-            with c1:
-                pick("provider", "Provider", PROVIDERS)
-            with c2:
-                txt("package", "Package", placeholder="e.g. FTTP 500/75")
+            pick("provider", "Provider", PROVIDERS)
+            st.caption("Expected speeds fill in from the package — run a speed test and enter what you measured.")
             c1, c2, c3, c4 = st.columns(4)
             with c1:
                 num("exp_down", "Expected ↓ Mbps")
@@ -896,8 +1011,13 @@ def sheet_screen():
                 num("meas_down", "Measured ↓ Mbps")
             with c4:
                 num("meas_up", "Measured ↑ Mbps")
-            if F.get("exp_down") and F.get("meas_down") and F["meas_down"] < 0.8 * F["exp_down"]:
-                st.caption(":orange[Measured download is more than 20% below expected — worth a note.]")
+            if F.get("exp_down") and F.get("meas_down"):
+                pct = round(100 * F["meas_down"] / F["exp_down"])
+                tone = "good" if pct >= 80 else "warn"
+                up_txt = ""
+                if F.get("exp_up") and F.get("meas_up"):
+                    up_txt = f" · upload {round(100 * F['meas_up'] / F['exp_up'])}% of expected"
+                render_html(chip(f"Download {pct}% of expected{up_txt}", tone))
             c1, c2 = st.columns(2)
             with c1:
                 pick("router", "Router make / model", ROUTERS)
@@ -981,7 +1101,7 @@ def sheet_screen():
                 st.caption(f":orange[Couldn't load Zoho sending addresses: {sender_err}]")
         chk("save_zoho", "Save PDF + notes to the customer's Zoho account", disabled=not linked)
         appt = job.get("module") not in ("Demo", "Manual") and not DEMO
-        if appt and zoho_client().can_mark_complete:
+        if appt and ZohoClient.can_mark_complete_job(job):
             chk("mark_complete", "Mark the Zoho appointment as completed")
 
         issues = problems()
@@ -1000,6 +1120,27 @@ def sheet_screen():
                 st.rerun()
 
     save_draft()
+
+
+def link_account(account_id):
+    """Attach an unlinked job to a Zoho account and fill any empty customer boxes from it."""
+    try:
+        details = zoho_client().account_details(account_id)
+    except ZohoError as e:
+        ss["flash"] = ("warn", f"Couldn't load that account: {e}")
+        return
+    ss.job.update(details)
+    fill = {"customer_name": "account_name", "account_number": "account_number", "address": "address",
+            "postcode": "postcode", "contact_name": "contact_name", "contact_phone": "contact_phone",
+            "contact_email": "contact_email", "cust_sign_name": "contact_name"}
+    for fk, dk in fill.items():
+        if details.get(dk) and not (F.get(fk) or "").strip():
+            F[fk] = details[dk]
+            ss.pop(wkey(fk), None)
+    if details.get("account_name"):
+        F["customer_name"] = details["account_name"]
+        ss.pop(wkey("customer_name"), None)
+    ss["flash"] = ("info", f"Linked to {details.get('account_name', 'the account')} in Zoho.")
 
 
 def _pdf_fields():
@@ -1086,8 +1227,9 @@ def deliver(to_email, to_name, subject, html, text, attachments, linked):
         try:
             z = zoho_client()
             ids = [z.upload_file(name, data, f"{mt}/{sub}") for name, data, mt, sub in attachments]
-            z.send_mail(ss.job["account_id"], sender, [{"user_name": to_name or to_email, "email": to_email}],
-                        subject, html, ids)
+            rmod, rid = job_record(ss.job)
+            z.send_mail(rid, sender, [{"user_name": to_name or to_email, "email": to_email}],
+                        subject, html, ids, module=rmod)
             return f"{to_email} — sent from {sender['email']} via Zoho"
         except ZohoError as e:
             zoho_err = str(e)
@@ -1176,7 +1318,8 @@ def office_email(d):
 def do_sync():
     d = _pdf_fields()
     job = ss.job
-    linked = bool(job.get("account_id")) and job.get("module") != "Demo" and not DEMO
+    linked = is_linked(job)
+    rmod, rid = job_record(job)
     photos = prepare_photos()
     steps = []
     with st.status("Completing job…", expanded=True) as status:
@@ -1190,22 +1333,22 @@ def do_sync():
         # Zoho
         if DEMO or job.get("module") == "Demo":
             steps.append(("Saved to Zoho", None, "Demo mode — nothing was sent to Zoho"))
-        elif not F.get("save_zoho") or not job.get("account_id"):
-            steps.append(("Saved to Zoho", None, "Skipped — no Zoho account linked" if not job.get("account_id") else "Skipped"))
+        elif not F.get("save_zoho") or not rid:
+            steps.append(("Saved to Zoho", None, "Skipped — no Zoho account linked" if not rid else "Skipped"))
         else:
             st.write("Saving to Zoho…")
             z = zoho_client()
             try:
-                z.add_note(job["account_id"], f"Job sheet {ref} – {d.get('visit_type')} – {d.get('engineer')}", note_text(d))
-                z.attach_file(job["account_id"], fname, office_pdf)
+                z.add_note(rid, f"Job sheet {ref} – {d.get('visit_type')} – {d.get('engineer')}", note_text(d), module=rmod)
+                z.attach_file(rid, fname, office_pdf, module=rmod)
                 for pname, pdata in photos:
-                    z.attach_file(job["account_id"], f"{ref}_{_safe(pname)}.jpg", pdata, "image/jpeg")
+                    z.attach_file(rid, f"{ref}_{_safe(pname)}.jpg", pdata, "image/jpeg", module=rmod)
                 steps.append(("Saved to Zoho", True, f"Note + PDF{f' + {len(photos)} photo(s)' if photos else ''} added to {d.get('customer_name')}"))
             except ZohoError as e:
                 steps.append(("Saved to Zoho", False, str(e)))
             if job.get("module") not in ("Manual",) and F.get("mark_complete"):
                 try:
-                    if z.mark_completed(job["id"]):
+                    if z.mark_completed(job["id"], job.get("module")):
                         steps.append(("Appointment marked complete", True, f"Status set to {z.completed_status}"))
                 except ZohoError as e:
                     steps.append(("Appointment marked complete", False, str(e)))
