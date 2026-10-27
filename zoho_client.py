@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 UK = ZoneInfo("Europe/London")
-CODE_VERSION = "2026-10-27.4"  # bump when this file changes
+CODE_VERSION = "2026-10-27.5"  # bump when this file changes
 
 
 class ZohoError(Exception):
@@ -173,20 +173,34 @@ class ZohoClient:
         start = datetime.combine(day, dtime(0, 0), UK).isoformat()
         end = datetime.combine(day, dtime(23, 59, 59), UK).isoformat()
         errs = []
-        # 1) COQL (needs ZohoCRM.coql.READ)
-        tail = f"from {module} where {f['start']} between '{start}' and '{end}' order by {f['start']} asc limit 200"
-        for cols in (["id", f["title"], f["start"], f["end"], *f["extra"]], ["id", f["title"], f["start"], f["end"], "Owner"]):
+        # 1) COQL (needs ZohoCRM.coql.READ) — paged, so busy days aren't cut off at 200
+        base = ["id", f["title"], f["start"], f["end"]]
+        variants = [base + f["extra"] + (["Participants"] if module == "Events" else []),
+                    base + f["extra"], base + ["Owner"]]
+        where = f"from {module} where {f['start']} between '{start}' and '{end}' order by {f['start']} asc"
+        for cols in variants:
             try:
-                data = self._req("POST", "coql", json={"select_query": f"select {', '.join(cols)} {tail}"})
-                return [self._light(rec, module) for rec in data.get("data", []) or []]
+                rows = []
+                for pg in range(20):
+                    data = self._req("POST", "coql", json={
+                        "select_query": f"select {', '.join(cols)} {where} limit {pg * 200}, 200"})
+                    got = data.get("data", []) or []
+                    rows += got
+                    if len(got) < 200 and not (data.get("info") or {}).get("more_records"):
+                        break
+                return [self._light(rec, module) for rec in rows]
             except ZohoError as e:
                 errs.append(str(e))
-        # 2) Search API (only needs the module scope)
+        # 2) Search API (only needs the module scope) — paged
         try:
             crit = f"(({f['start']}:greater_equal:{start})and({f['start']}:less_equal:{end}))"
-            data = self._req("GET", f"{module}/search", params={"criteria": crit, "per_page": 200})
-            return sorted([self._light(rec, module) for rec in data.get("data", []) or []],
-                          key=lambda j: j.get("start") or "")
+            rows = []
+            for page in range(1, 21):
+                data = self._req("GET", f"{module}/search", params={"criteria": crit, "per_page": 200, "page": page})
+                rows += data.get("data", []) or []
+                if not (data.get("info") or {}).get("more_records"):
+                    break
+            return sorted([self._light(rec, module) for rec in rows], key=lambda j: j.get("start") or "")
         except ZohoError as e:
             errs.append(str(e))
         # 3) Plain list of recently changed records, filtered by day
@@ -239,9 +253,21 @@ class ZohoClient:
             "for_name": _lookup_name(link) or (_lookup_name(rec.get("Who_Id")) if is_ev else ""),
             "hydrated": False,
         }
+        people = [eng.get("name", "")]
         if is_ev:
             out["consultant"] = eng.get("name", "")
-            out["booked_label"] = "Booked by"
+            out["booked_label"] = "Host"
+            users = None
+            for pt in rec.get("Participants") or []:
+                if not isinstance(pt, dict) or pt.get("type") not in ("user", None):
+                    continue  # staff only — customer contacts/leads invited to a meeting aren't hosts
+                nm = pt.get("name") or ""
+                if not nm and pt.get("type") == "user":
+                    users = users if users is not None else self.users()
+                    nm = users.get(str(pt.get("participant")), {}).get("name", "")
+                if nm:
+                    people.append(nm)
+        out["people"] = [p for p in dict.fromkeys(people) if p]
         return out
 
     # ------------------------------------------------------------ deals diary
@@ -296,6 +322,7 @@ class ZohoClient:
                              "email": (owner.get("email") or "").lower()},
                 "consultant": owner.get("name", ""),
                 "booked_label": "Consultant",
+                "people": [owner.get("name", "")] if owner.get("name") else [],
                 "for_name": acc.get("name", "") if isinstance(acc, dict) else "",
                 "account_id": _lookup_id(acc),
                 "contact_id": _lookup_id(r.get("Contact_Name")),
@@ -433,19 +460,37 @@ class ZohoClient:
         return out
 
     def search_accounts(self, term: str) -> list[dict]:
+        """Customers (Accounts) and not-yet-converted Leads matching the words typed."""
         term = term.strip()
         if len(term) < 2:
             return []
-        data = self._req("GET", "Accounts/search", params={"word": term, "per_page": 15})
-        res = []
-        for a in data.get("data", []) or []:
-            res.append({
-                "id": a["id"],
-                "name": a.get("Account_Name", ""),
-                "number": a.get("Account_Number") or "",
-                "town": a.get("Shipping_City") or a.get("Billing_City") or "",
-                "postcode": a.get("Shipping_Code") or a.get("Billing_Code") or "",
-            })
+        res, errs = [], []
+        try:
+            data = self._req("GET", "Accounts/search", params={"word": term, "per_page": 15})
+            for a in data.get("data", []) or []:
+                res.append({
+                    "id": a["id"], "module": "Accounts", "kind": "Customer",
+                    "name": a.get("Account_Name", ""),
+                    "number": a.get("Account_Number") or "",
+                    "town": a.get("Shipping_City") or a.get("Billing_City") or "",
+                    "postcode": a.get("Shipping_Code") or a.get("Billing_Code") or "",
+                })
+        except ZohoError as e:
+            errs.append(e)
+        try:
+            data = self._req("GET", "Leads/search", params={"word": term, "per_page": 10})
+            for l in data.get("data", []) or []:
+                person = l.get("Full_Name") or " ".join(x for x in [l.get("First_Name"), l.get("Last_Name")] if x)
+                res.append({
+                    "id": l["id"], "module": "Leads", "kind": "Lead",
+                    "name": l.get("Company") or person or "(lead)",
+                    "number": person if l.get("Company") else "",
+                    "town": l.get("City") or "", "postcode": l.get("Zip_Code") or "",
+                })
+        except ZohoError as e:
+            errs.append(e)
+        if not res and len(errs) == 2:
+            raise errs[0]
         return res
 
     # ------------------------------------------------------------ write back

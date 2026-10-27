@@ -820,9 +820,6 @@ def jobs_screen():
                 client._deals_cache = (0.0, None)
             st.rerun()
     mine = False
-    if not deals_mode:
-        mine = st.toggle("Only my jobs", value=ss.get("mine", True), key="mine_t")
-        ss.mine = mine
 
     days = [day] if view == "Day" else [day + timedelta(days=i) for i in range(7)]
     jobs, err, warns = [], None, set()
@@ -847,27 +844,61 @@ def jobs_screen():
         else:
             st.warning(f"Part of the diary couldn't be loaded — {w}")
 
-    shown = [j for j in jobs if is_mine(j)] if mine else jobs
-    hidden = len(jobs) - len(shown)
     finished = done_job_ids()
+
+    def people_of(j):
+        names = list(j.get("people") or [])
+        eng_name = (j.get("engineer") or {}).get("name")
+        if eng_name:
+            names.append(eng_name)
+        return [n for n in dict.fromkeys(names) if n]
+
+    everyone = "Everyone"
+    hosts = sorted({n for j in jobs for n in people_of(j)}, key=str.lower)
+    me = next((h for h in hosts if h.strip().lower() == ENG["name"].strip().lower()), None)
+    if "host_f" not in ss:  # first visit: the engineer's own bookings if they have any
+        ss.host_f = me or everyone
 
     with st.container(key="card-diary"):
         if view == "Day":
             head = "Today" if day == date.today() else day.strftime("%A %-d %B")
         else:
             head = f"{day.strftime('%-d %b')} – {days[-1].strftime('%-d %b')}"
-        sub = f"{len(shown)} booked appointment{'s' if len(shown) != 1 else ''}"
-        if deals_mode:
-            sub += " from Zoho Deals — pick the one you're attending"
-        elif hidden:
-            sub += f" · {hidden} assigned to others (switch off 'Only my jobs' to see them)"
+        f1, f2 = st.columns([1, 1.2])
+        with f1:
+            opts = [everyone] + hosts
+            if ss.host_f not in opts:
+                opts.append(ss.host_f)
+            ss.host_f = st.selectbox("Host / attendee", opts, index=opts.index(ss.host_f), key="host_f_w",
+                                     help="Shows bookings where this person is the host (organiser) "
+                                          "or has been added as a participant.")
+        with f2:
+            q = st.text_input("Search", key="diary_q", placeholder="Customer or title…")
+
+        shown = jobs
+        if ss.host_f != everyone:
+            hf = ss.host_f.strip().lower()
+            shown = [j for j in shown if any(n.strip().lower() == hf for n in people_of(j))]
+        if q and q.strip():
+            words = q.lower().split()
+            shown = [j for j in shown if all(w in " ".join(str(j.get(k) or "") for k in
+                                                       ("title", "for_name", "account_name", "consultant")).lower()
+                                             for w in words)]
+        sub = (f"{len(shown)} of {len(jobs)} bookings" if len(shown) != len(jobs)
+               else f"{len(jobs)} booking{'s' if len(jobs) != 1 else ''}")
+        if ss.host_f != everyone:
+            sub += f" · {ss.host_f}"
         section_header("01", f"{head} — diary", sub)
         if not shown:
+            tips = '<li>Check the date, or switch to "Next 7 days"</li>'
+            if ss.host_f != everyone or (q and q.strip()):
+                tips += '<li>Set Host / attendee to "Everyone" or clear the search</li>'
+            tips += '<li>Not booked in Zoho? Use "Job not in the diary" below</li>'
             render_html(f'<div class="pe-empty"><div class="ic">{ICON_CAL}</div>'
-                        '<div class="t">Nothing in the diary for ' + ("this day" if view == "Day" else "these dates") + '</div>'
-                        '<ol><li>Check the date, or switch to "Next 7 days"</li>'
-                        + ('' if deals_mode else '<li>Switch off "Only my jobs" to see the whole team</li>')
-                        + '<li>Not booked in Zoho? Use "Job not in the diary" below</li></ol></div>')
+                        '<div class="t">No bookings match</div><ol>' + tips + '</ol></div>')
+        if ss.host_f != everyone and not me and hosts:
+            st.caption(f"Tip: \"{ENG['name']}\" isn't the host or a participant on any booking here — "
+                       "check your name matches Zoho, or pick it from the list.")
 
     last_day = None
     for i, job in enumerate(shown):
@@ -903,7 +934,7 @@ def jobs_screen():
 
     with st.expander("Job not in the diary?", icon=":material/search:"):
         if not DEMO:
-            term = st.text_input("Search Zoho accounts", placeholder="Company name…", key="acc_search")
+            term = st.text_input("Search Zoho customers and leads", placeholder="Company name…", key="acc_search")
             if term and len(term.strip()) >= 2:
                 try:
                     found = zoho_client().search_accounts(term)
@@ -911,14 +942,17 @@ def jobs_screen():
                     found = []
                     st.error(str(e))
                 if not found:
-                    st.caption("No matching accounts.")
+                    st.caption("Nothing found — try one distinctive word, e.g. just \"Lettings\".")
                 for a in found:
-                    label = a["name"] + (f"  ·  {a['number']}" if a["number"] else "") + (f"  ·  {a['postcode']}" if a["postcode"] else "")
+                    label = (f"{a['kind']}: " if a.get("kind") else "") + a["name"] + (f"  ·  {a['number']}" if a["number"] else "") + (f"  ·  {a['postcode']}" if a["postcode"] else "")
                     if st.button(label, key=f"acc_{a['id']}", **FULL):
                         try:
-                            details = zoho_client().account_details(a["id"])
+                            details = (zoho_client().lead_details(a["id"]) if a.get("module") == "Leads"
+                                       else zoho_client().account_details(a["id"]))
                         except ZohoError as e:
-                            details = {"account_id": a["id"], "account_name": a["name"]}
+                            details = ({"record_module": "Leads", "record_id": a["id"]} if a.get("module") == "Leads"
+                                       else {"account_id": a["id"]})
+                            details["account_name"] = a["name"]
                             ss["flash"] = ("warn", str(e))
                         open_job({"id": f"acc-{a['id']}-{date.today().isoformat()}", "module": "Manual",
                                   "title": "Unscheduled visit", "start": None, "end": None, "status": "",
@@ -1003,10 +1037,10 @@ def sheet_screen():
 
     if not linked and not DEMO and zoho_client():
         with st.expander("Link this job to a Zoho account", icon=":material/link:", expanded=True):
-            st.caption("This booking isn't linked to a customer in Zoho. Find the account so the job sheet, "
-                       "notes and emails are saved against it.")
+            st.caption("This booking isn't linked to a customer in Zoho. Find the customer (or lead) so the job "
+                       "sheet, notes and emails are saved against it.")
             default_term = F.get("customer_name") or job.get("for_name") or ""
-            term = st.text_input("Search Zoho accounts", value=default_term, key=wkey("link_search"),
+            term = st.text_input("Search Zoho customers and leads", value=default_term, key=wkey("link_search"),
                                  placeholder="Company name…")
             if term and len(term.strip()) >= 2:
                 try:
@@ -1015,11 +1049,11 @@ def sheet_screen():
                     found = []
                     st.error(str(e))
                 if not found:
-                    st.caption("No matching accounts — try a shorter part of the name.")
-                for a in found[:8]:
-                    label = a["name"] + (f"  ·  {a['number']}" if a["number"] else "") + (f"  ·  {a['postcode']}" if a["postcode"] else "")
+                    st.caption("Nothing found — try one distinctive word, e.g. just \"Lettings\".")
+                for a in found[:10]:
+                    label = (f"{a['kind']}: " if a.get("kind") else "") + a["name"] + (f"  ·  {a['number']}" if a["number"] else "") + (f"  ·  {a['postcode']}" if a["postcode"] else "")
                     if st.button(label, key=wkey(f"link_{a['id']}"), icon=":material/add_link:", **FULL):
-                        link_account(a["id"])
+                        link_account(a["id"], a.get("module", "Accounts"))
                         st.rerun()
 
     # ---------------- 01 customer
@@ -1250,10 +1284,11 @@ def sheet_screen():
     save_draft()
 
 
-def link_account(account_id):
-    """Attach an unlinked job to a Zoho account and fill any empty customer boxes from it."""
+def link_account(account_id, module="Accounts"):
+    """Attach an unlinked job to a Zoho account (or lead) and fill any empty customer boxes from it."""
     try:
-        details = zoho_client().account_details(account_id)
+        details = (zoho_client().lead_details(account_id) if module == "Leads"
+                   else zoho_client().account_details(account_id))
     except ZohoError as e:
         ss["flash"] = ("warn", f"Couldn't load that account: {e}")
         return
