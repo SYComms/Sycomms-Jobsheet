@@ -2,7 +2,7 @@
 
 Mobile-first web app that replaces the paper Installation Job Sheet.
 
-**Engineer flow:** log in with name + PIN → see today's jobs from Zoho → open one (customer, address,
+**Engineer flow:** log in with the shared app password + their name → see today's jobs from Zoho → open one (customer, address,
 contact, email and office notes are pre-filled) → tap through the sheet → customer and engineer sign
 on screen → **Complete & sync job**.
 
@@ -48,7 +48,7 @@ ZohoCRM.modules.ALL,ZohoCRM.coql.READ,ZohoCRM.users.READ,ZohoCRM.settings.emails
 | `Files.CREATE` | Attaching the PDF to the email | Same as above |
 | `settings.emails.READ` | Listing hello@ / support@ etc. | Uses the `allowed_from` list in Secrets instead |
 | `coql.READ` | Fast diary lookup | Slower fallback is used automatically |
-| `users.READ` | Matching "Only my jobs" by email | Add `zoho_user_id` per engineer in Secrets |
+| `users.READ` | Name list on the login screen + "Only my jobs" | Add `engineer_names` in Secrets |
 
 Then swap the code for a refresh token (POST to
 `https://accounts.zoho.eu/oauth/v2/token?grant_type=authorization_code&client_id=…&client_secret=…&code=…`)
@@ -63,8 +63,10 @@ missing, so you can try it first and only regenerate if needed.
 - Default: Zoho CRM **Appointments** module (`Appointments__s`). The appointment's *Appointment For*
   can be an Account, Contact or Deal — the app finds the Account either way.
 - If visits are booked as **Meetings** instead, set `appointments_module = "Events"`.
-- "Only my jobs" matches the appointment **Owner** to the engineer's email in Secrets. If engineers
-  are recorded in a different field, set `engineer_field` to that field's API name.
+- "Only my jobs" matches the appointment **Owner** to the name the engineer logs in with, so names
+  should be spelt as they are in Zoho (the login list offers your Zoho users' names, or the
+  `engineer_names` list in Secrets). If engineers are recorded in a different field, set
+  `engineer_field` to that field's API name. They can always switch "Only my jobs" off.
 - Not in the diary? Engineers can search any Zoho account, or start a blank sheet.
 
 ## Good to know

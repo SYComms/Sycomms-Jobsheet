@@ -101,11 +101,15 @@ BRAND = {
 DEMO = bool(secret("app", "demo_mode", False)) or secret("zoho") is None
 
 
-def engineers():
-    try:
-        return [dict(e) for e in st.secrets["engineers"]]
-    except Exception:
-        return []
+def engineer_names():
+    """Names offered on the login screen: [app] engineer_names in Secrets, else Zoho users."""
+    names = list(secret("app", "engineer_names", []) or [])
+    if not names and not DEMO and zoho_client():
+        try:
+            names = sorted({u["name"] for u in zoho_client().users().values() if u.get("name")})
+        except Exception:
+            names = []
+    return names
 
 
 @st.cache_resource
@@ -434,28 +438,36 @@ def done_job_ids():
 
 
 # =====================================================================
-#  LOGIN (fails closed if no engineers are configured)
+#  LOGIN — one shared app password, then the engineer gives their name.
+#  Fails closed: if [app] password isn't set in Secrets, nobody gets in.
 # =====================================================================
 def login_screen():
     render_html(f'<div class="pe-login-head"><div class="pe-logo">{ICON_TOOL}</div>'
                 f'<div class="t">{esc(BRAND["name"])} Job Sheets</div>'
                 '<div class="s">Engineer site visits — fill in, sign off, sync to Zoho.</div></div>')
-    engs = engineers()
+    app_pw = secret("app", "password")
     with st.container(key="card-login"):
-        if not engs:
-            st.error("No engineers are set up yet. Add them under [[engineers]] in the app's Secrets.")
+        if not app_pw:
+            st.error("The app password isn't set yet. Add password under [app] in the app's Secrets.")
             st.stop()
-        names = [e["name"] for e in engs]
+        names = engineer_names()
         with st.form("login"):
-            who = st.selectbox("Engineer", names, index=None, placeholder="Select your name")
-            pin = st.text_input("PIN", type="password")
+            if names:
+                who = st.selectbox("Your name", names, index=None, accept_new_options=True,
+                                   placeholder="Pick or type your name")
+            else:
+                who = st.text_input("Your name", placeholder="e.g. Dave Jones")
+            pw = st.text_input("App password", type="password")
             ok = st.form_submit_button("Log in", **FULL)
         if ok:
-            eng = next((e for e in engs if e["name"] == who), None)
-            if eng and eng.get("pin") and hmac.compare_digest(str(eng["pin"]), pin.strip()):
-                ss.engineer = eng
+            who = (who or "").strip()
+            if not hmac.compare_digest(str(app_pw), pw.strip()):
+                st.error("That password isn't right.")
+            elif len(who) < 2:
+                st.error("Please enter your name — it goes on the job sheet.")
+            else:
+                ss.engineer = {"name": who.title() if who.islower() else who, "email": ""}
                 st.rerun()
-            st.error("That name and PIN don't match.")
     st.stop()
 
 
