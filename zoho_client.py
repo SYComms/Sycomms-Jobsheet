@@ -17,6 +17,7 @@ All settings come from Streamlit secrets, section [zoho]:
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import date, datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
@@ -24,7 +25,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 UK = ZoneInfo("Europe/London")
-CODE_VERSION = "2026-10-27.7"  # bump when this file changes
+CODE_VERSION = "2026-10-27.9"  # bump when this file changes
 
 
 class ZohoError(Exception):
@@ -39,6 +40,31 @@ def _lookup_name(v):
     if isinstance(v, dict):
         return v.get("name") or v.get("full_name") or ""
     return v if isinstance(v, str) else ""
+
+
+def _norm_company(v):
+    v = re.sub(r"[^a-z0-9 ]+", " ", str(v or "").lower())
+    v = re.sub(r"\b(ltd|limited|plc|llp|the|co|uk)\b", " ", v)
+    return " ".join(v.split())
+
+
+def _same_booking(meeting, deal):
+    """A meeting the consultant booked for a hidden (e.g. Dem Booked) deal: same person, same
+    day (already the case), and the meeting is for the same company."""
+    m_eng, d_eng = meeting.get("engineer") or {}, deal.get("engineer") or {}
+    same_person = (m_eng.get("id") and str(m_eng.get("id")) == str(d_eng.get("id"))) or \
+                  (m_eng.get("name") and m_eng.get("name", "").lower() == d_eng.get("name", "").lower())
+    if not same_person:
+        return False
+    deal_names = {_norm_company(deal.get("title")), _norm_company(deal.get("for_name"))} - {""}
+    for v in (meeting.get("title"), meeting.get("for_name")):
+        mv = _norm_company(v)
+        if not mv:
+            continue
+        for dn in deal_names:
+            if mv == dn or (len(dn) >= 5 and dn in mv) or (len(mv) >= 5 and mv in dn):
+                return True
+    return False
 
 
 class ZohoClient:
@@ -62,6 +88,10 @@ class ZohoClient:
         # and the owner email domain that marks SY Comms deals (Deals also holds SY Plus).
         self.deal_date_field = cfg.get("deal_date_field", "Appt_Date_Time")
         self.deal_owner_domain = (cfg.get("deal_owner_domain", "@sycomms.co.uk") or "").lower()
+        # Sales appointments engineers don't attend. Deals at these stages are hidden, along with
+        # the meeting the consultant booked for the same company on the same day.
+        hide = cfg.get("hide_deal_stages", ["Dem Booked"])
+        self.hide_stages = {str(x).strip().lower() for x in (hide or [])}
         self._deals_cache = (0.0, None)
         self._token = None
         self._token_exp = 0.0
@@ -163,11 +193,17 @@ class ZohoClient:
     def list_jobs(self, day: date) -> list[dict]:
         """All diary entries for the day across every source. One source failing doesn't
         hide the others — its error is kept in last_warnings."""
-        jobs, errors = [], []
+        jobs, errors, hidden_deals = [], [], []
         for module in self.sources:
             try:
                 if module == "Deals":
-                    jobs += [j for j in self._all_deal_jobs() if j["day"] == day.isoformat()]
+                    for j in self._all_deal_jobs():
+                        if j["day"] != day.isoformat():
+                            continue
+                        if (j.get("status") or "").strip().lower() in self.hide_stages:
+                            hidden_deals.append(j)
+                        else:
+                            jobs.append(j)
                 else:
                     jobs += self._list_module(day, module)
             except ZohoError as e:
@@ -175,6 +211,9 @@ class ZohoClient:
         self.last_warnings = errors
         if errors and len(errors) == len(self.sources):
             raise ZohoError(" | ".join(errors))
+        if hidden_deals:
+            jobs = [j for j in jobs if not (j.get("module") == "Events" and
+                                            any(_same_booking(j, d) for d in hidden_deals))]
         return sorted(jobs, key=lambda j: j.get("start") or "")
 
     def _list_module(self, day, module):
@@ -197,7 +236,7 @@ class ZohoClient:
                     rows += got
                     if len(got) < 200 and not (data.get("info") or {}).get("more_records"):
                         break
-                return [self._light(rec, module) for rec in rows]
+                return self._fill_names([self._light(rec, module) for rec in rows], module)
             except ZohoError as e:
                 errs.append(str(e))
         # 2) Search API (only needs the module scope) — paged
@@ -209,7 +248,7 @@ class ZohoClient:
                 rows += data.get("data", []) or []
                 if not (data.get("info") or {}).get("more_records"):
                     break
-            return sorted([self._light(rec, module) for rec in rows], key=lambda j: j.get("start") or "")
+            return self._fill_names(sorted([self._light(rec, module) for rec in rows], key=lambda j: j.get("start") or ""), module)
         except ZohoError as e:
             errs.append(str(e))
         # 3) Plain list of recently changed records, filtered by day
@@ -227,9 +266,35 @@ class ZohoClient:
                         pass
                 if not (data.get("info") or {}).get("more_records"):
                     break
-            return sorted(jobs, key=lambda j: j.get("start") or "")
+            return self._fill_names(sorted(jobs, key=lambda j: j.get("start") or ""), module)
         except ZohoError as e:
             raise ZohoError(f"{e}  (other lookups also failed: {errs[-1] if errs else ''})")
+
+    def _fill_names(self, jobs, module):
+        """The quick diary lookup gives a meeting's customer as an ID only. Fetch the day's
+        meetings again in batches of 100 (one request each) to get the customer names for the list."""
+        if module != "Events":
+            return jobs
+        need = [j for j in jobs if not j.get("for_name") and j.get("id")]
+        for i in range(0, len(need), 100):
+            batch = need[i:i + 100]
+            try:
+                data = self._req("GET", "Events", params={"ids": ",".join(str(j["id"]) for j in batch),
+                                                          "fields": "What_Id,Who_Id,Participants"})
+            except ZohoError:
+                return jobs  # names will still fill in when the job is opened
+            by_id = {str(r.get("id")): r for r in data.get("data", []) or []}
+            for j in batch:
+                r = by_id.get(str(j["id"])) or {}
+                name = _lookup_name(r.get("What_Id")) or _lookup_name(r.get("Who_Id"))
+                if not name:
+                    for pt in r.get("Participants") or []:
+                        if isinstance(pt, dict) and pt.get("type") in ("contact", "lead") and pt.get("name"):
+                            name = pt["name"]
+                            break
+                if name:
+                    j["for_name"] = name
+        return jobs
 
     def _engineer_of(self, rec):
         v = rec.get(self.engineer_field)
