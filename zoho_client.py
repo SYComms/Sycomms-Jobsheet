@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 UK = ZoneInfo("Europe/London")
-CODE_VERSION = "2026-10-29.1"  # bump when this file changes
+CODE_VERSION = "2026-10-29.2"  # bump when this file changes
 
 
 class ZohoError(Exception):
@@ -40,6 +40,9 @@ def _lookup_name(v):
     if isinstance(v, dict):
         return v.get("name") or v.get("full_name") or ""
     return v if isinstance(v, str) else ""
+
+
+_POSTCODE = re.compile(r"\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b", re.I)
 
 
 def _norm_company(v):
@@ -218,18 +221,12 @@ class ZohoClient:
         return sorted(jobs, key=lambda j: j.get("start") or "")
 
     def _fill_addresses(self, jobs):
-        """Site address + postcode for each card: the meeting's Location if one was typed in,
-        otherwise the customer account's address (shipping first, then billing). One request
+        """Site address + postcode for each card. The customer account's address is used (shipping
+        first, then billing). A Location typed on the meeting only wins when it's a full address
+        (has a postcode) — a bare town like "Wrexham" is shown alongside, not instead. One request
         per 100 accounts."""
-        ids = []
-        for j in jobs:
-            if j.get("venue"):
-                j["card_address"], j["card_postcode"] = j["venue"], ""
-                continue
-            aid = j.get("card_account_id") or j.get("account_id")
-            if aid and not j.get("card_address"):
-                ids.append(str(aid))
-        ids = list(dict.fromkeys(ids))
+        ids = list(dict.fromkeys(str(j.get("card_account_id") or j.get("account_id"))
+                                 for j in jobs if (j.get("card_account_id") or j.get("account_id"))))
         addr = {}
         for i in range(0, len(ids), 100):
             try:
@@ -237,20 +234,31 @@ class ZohoClient:
                     "ids": ",".join(ids[i:i + 100]),
                     "fields": "Shipping_Street,Shipping_City,Shipping_Code,Billing_Street,Billing_City,Billing_Code"})
             except ZohoError:
-                return  # cards just show without an address
+                break  # cards just show whatever else we have
             for a in data.get("data", []) or []:
+                best = None
                 for pre in ("Shipping", "Billing"):
                     street = ", ".join(x.strip() for x in [a.get(f"{pre}_Street") or "", a.get(f"{pre}_City") or ""]
                                        if x and x.strip())
                     pc = (a.get(f"{pre}_Code") or "").strip()
-                    if street or pc:
-                        addr[str(a.get("id"))] = (street, pc)
-                        break
+                    score = (2 if a.get(f"{pre}_Street") else 0) + (1 if pc else 0)
+                    if (street or pc) and (best is None or score > best[0]):
+                        best = (score, street, pc)
+                if best:
+                    addr[str(a.get("id"))] = (best[1], best[2])
         for j in jobs:
+            venue = (j.get("venue") or "").strip().rstrip(".,; ")
             aid = str(j.get("card_account_id") or j.get("account_id") or "")
-            if aid in addr and not j.get("card_address"):
-                j["card_address"], j["card_postcode"] = addr[aid]
-
+            acc = addr.get(aid)
+            if acc and not j.get("card_address"):
+                j["card_address"], j["card_postcode"] = acc
+            if venue:
+                full_venue = bool(_POSTCODE.search(venue))
+                have = (j.get("card_address") or "") + " " + (j.get("card_postcode") or "")
+                if full_venue or not have.strip():
+                    j["card_address"], j["card_postcode"] = venue, ""
+                elif venue.lower() not in have.lower():
+                    j["card_address"] = f"{j['card_address']} ({venue})" if j.get("card_address") else venue
     def _list_module(self, day, module):
         f = self._fields(module)
         start = datetime.combine(day, dtime(0, 0), UK).isoformat()
