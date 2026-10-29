@@ -195,27 +195,32 @@ def build_pdf(F: dict, brand: dict, copy: str = "customer", photos=None) -> byte
             if copy == "customer" and F.get("include_pw_customer"):
                 return v
             return "•••••••• (not shown on this copy)"
-        bb = F.get("bb_type")
-        if bb == "Other" and F.get("bb_type_other"):
-            bb = F["bb_type_other"]
-        story += [_section(n, "Broadband & network"), _grid([
-            ("Broadband type", bb),
-            ("Provider / package", " – ".join(x for x in [F.get("provider"), F.get("package")] if x)),
-            ("Expected speed (down / up)", f"{F.get('exp_down') or '—'} / {F.get('exp_up') or '—'} Mbps"),
-            ("Measured speed (down / up)", f"{F.get('meas_down') or '—'} / {F.get('meas_up') or '—'} Mbps"),
-            ("Router make / model", F.get("router")),
-            ("Router serial number", F.get("router_serial")),
-            ("WAN / ONT details", F.get("wan_details")),
-            ("Wi-Fi SSID", F.get("ssid")),
-            ("Wi-Fi password", pw(F.get("wifi_pw"))),
-            ("Wi-Fi band(s)", F.get("wifi_bands")),
-            ("Guest Wi-Fi enabled?", F.get("guest_wifi")),
-            ("Guest SSID / password",
-             f"{F.get('guest_ssid') or '—'} / {pw(F.get('guest_pw'))}" if F.get("guest_wifi") == "Yes" else "—"),
-            ("Network checks", F.get("network_checks")),
-            ("Coverage / signal checked", F.get("coverage_checked")),
-            ("Password handed over securely", F.get("pw_handover")),
-        ]), Spacer(1, 8)]
+        lines = F.get("bb_lines") or [F]
+        for L in lines:
+            bb = L.get("bb_type")
+            if bb == "Other" and L.get("bb_type_other"):
+                bb = L["bb_type_other"]
+            title = "Broadband & network"
+            if len(lines) > 1:
+                title += f" — line {L.get('line_no')}" + (f" ({L['bb_site']})" if L.get("bb_site") else "")
+            story += [_section(n, title), _grid([
+                ("Broadband type", bb),
+                ("Provider / package", " – ".join(x for x in [L.get("provider"), L.get("package")] if x)),
+                ("Expected speed (down / up)", f"{L.get('exp_down') or '—'} / {L.get('exp_up') or '—'} Mbps"),
+                ("Measured speed (down / up)", f"{L.get('meas_down') or '—'} / {L.get('meas_up') or '—'} Mbps"),
+                ("Router make / model", L.get("router")),
+                ("Router serial number", L.get("router_serial")),
+                ("WAN / ONT details", L.get("wan_details")),
+                ("Wi-Fi SSID", L.get("ssid")),
+                ("Wi-Fi password", pw(L.get("wifi_pw"))),
+                ("Wi-Fi band(s)", L.get("wifi_bands")),
+                ("Guest Wi-Fi enabled?", L.get("guest_wifi")),
+                ("Guest SSID / password",
+                 f"{L.get('guest_ssid') or '—'} / {pw(L.get('guest_pw'))}" if L.get("guest_wifi") == "Yes" else "—"),
+                ("Network checks", L.get("network_checks")),
+                ("Coverage / signal checked", L.get("coverage_checked")),
+                ("Password handed over securely", L.get("pw_handover")),
+            ]), Spacer(1, 8)]
         n += 1
 
     # ---- testing & sign-off
