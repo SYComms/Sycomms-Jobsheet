@@ -19,6 +19,7 @@ import json
 import re
 import smtplib
 import ssl
+import urllib.parse
 import uuid
 from datetime import date, datetime, time as dtime, timedelta
 from email.message import EmailMessage
@@ -354,7 +355,9 @@ label:not([data-selected="true"]):has(input[role="switch"]) > div:first-of-type{
 .pe-brand{display:flex;align-items:center;gap:10px}.pe-brand .n{font-weight:800;color:var(--text);letter-spacing:-.02em}.pe-brand .u{font-size:.78rem;color:var(--muted)}
 .job-time{font-size:.8rem;font-weight:700;color:var(--accent-2);letter-spacing:.02em}
 .job-title{font-size:1.08rem;font-weight:700;color:var(--text);margin:4px 0 2px}
-.job-cust{font-size:.9rem;color:var(--muted);margin-bottom:10px}
+.job-cust{font-size:.9rem;color:var(--muted);margin-bottom:6px}
+.job-addr{display:inline-flex;align-items:flex-start;gap:6px;font-size:.88rem;color:var(--accent-2)!important;text-decoration:none!important;margin:2px 0 10px;line-height:1.35}
+.job-addr svg{flex-shrink:0;margin-top:2px}.job-addr:hover span{text-decoration:underline}
 .pe-note{background:rgba(56,214,245,.07);border:1px solid rgba(56,214,245,.25);border-radius:12px;padding:12px 14px;color:var(--text);font-size:.9rem;margin-bottom:14px}
 .pe-note b{color:var(--accent-2);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:4px}
 .pe-empty{text-align:center;padding:26px 10px 8px}
@@ -376,6 +379,9 @@ label:not([data-selected="true"]):has(input[role="switch"]) > div:first-of-type{
 ICON_TOOL = ('<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" '
              'stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0'
              'l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>')
+ICON_PIN = ('<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" '
+            'stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>'
+            '<circle cx="12" cy="10" r="3"/></svg>')
 ICON_CAL = ('<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
             'stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/>'
             '<line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>')
@@ -561,30 +567,30 @@ def chk(n, label, default=False, **kw):
     return F[n]
 
 
-def _package_chosen():
-    """Package picked in the dropdown."""
-    apply_package(ss.F, ss.get(wkey("package")) or "")
+def _package_chosen(sx=""):
+    """Package picked in the dropdown (sx = which broadband line)."""
+    apply_package(ss.F, ss.get(wkey("package" + sx)) or "", sx)
 
 
-def apply_package(F, pkg):
+def apply_package(F, pkg, sx=""):
     """Fill in broadband type, provider and expected speeds from a package name (e.g. 'FTTP 80/20')."""
-    F["package"] = pkg
+    F["package" + sx] = pkg
     up = pkg.upper()
     if up.startswith("FTTP"):
-        F["bb_type"] = "Full Fibre (FTTP)"
+        F["bb_type" + sx] = "Full Fibre (FTTP)"
     elif up.startswith("SOGEA"):
-        F["bb_type"] = "SoGEA"
+        F["bb_type" + sx] = "SoGEA"
     elif up.startswith("FTTC"):
-        F["bb_type"] = "Fibre to cabinet (FTTC)"
+        F["bb_type" + sx] = "Fibre to cabinet (FTTC)"
     elif "LEASED" in up or "ETHERNET" in up:
-        F["bb_type"] = "Ethernet leased line"
+        F["bb_type" + sx] = "Ethernet leased line"
     m = re.search(r"(\d+)\s*/\s*(\d+)", pkg)
     if m:
-        F["exp_down"], F["exp_up"] = int(m.group(1)), int(m.group(2))
-    if pkg in BB_PACKAGES and not F.get("provider"):
-        F["provider"] = "SY"
+        F["exp_down" + sx], F["exp_up" + sx] = int(m.group(1)), int(m.group(2))
+    if pkg in BB_PACKAGES and not F.get("provider" + sx):
+        F["provider" + sx] = "SY"
     for k in ("bb_type", "exp_down", "exp_up", "provider"):
-        ss.pop(wkey(k), None)  # redraw those boxes with the new values
+        ss.pop(wkey(k + sx), None)  # redraw those boxes with the new values
 
 
 # ---------------------------------------------------------------- quote JSON import
@@ -763,6 +769,99 @@ def software_picker():
     F["software_name"], F["licence_count"] = summary, total
     if total:
         st.caption(f"Licence / seat count: **{total}**  ·  {summary}")
+
+
+# ---------------------------------------------------------------- broadband lines
+BB_KEYS = ["bb_site", "package", "bb_type", "bb_type_other", "provider", "exp_down", "exp_up", "meas_down",
+           "meas_up", "router", "router_serial", "wan_details", "ssid", "wifi_pw", "wifi_bands", "guest_wifi",
+           "guest_ssid", "guest_pw", "network_checks", "coverage_checked", "pw_handover"]
+
+
+def bb_sx(i):
+    """Key suffix for broadband line i: line 1 uses the plain keys (so older sheets and quotes still work)."""
+    return "" if i == 0 else f"__{i + 1}"
+
+
+def bb_lines(F):
+    """Every broadband line as its own dict with plain keys (for the PDF and the Zoho note)."""
+    out = []
+    for i in range(max(1, int(F.get("bb_count") or 1))):
+        sx = bb_sx(i)
+        out.append({k: F.get(k + sx) for k in BB_KEYS} | {"line_no": i + 1})
+    return out
+
+
+def broadband_line(i, count, n):
+    sx = bb_sx(i)
+    with st.container(key=f"card-s4-{i}"):
+        head = "Broadband & network" if count == 1 else f"Broadband & network — line {i + 1}"
+        section_header(f"{n:02d}" if i == 0 else f"{n:02d}.{i + 1}", head,
+                       "" if count == 1 else (F.get("bb_site" + sx) or ""))
+        if count > 1:
+            txt("bb_site" + sx, "Site / location", placeholder="e.g. Main office, Unit 4, Warehouse")
+        # Package first — picking one fills in type, provider and expected speeds
+        opts = list(BB_PACKAGES)
+        cur = F.get("package" + sx)
+        if cur and cur not in opts:
+            opts.append(cur)
+        F["package" + sx] = st.selectbox(
+            "Broadband package (from the pricebook)", opts, index=opts.index(cur) if cur in opts else None,
+            key=wkey("package" + sx), placeholder="Choose the package, or type another",
+            accept_new_options=True, on_change=_package_chosen, args=(sx,))
+        one("bb_type" + sx, "Broadband type", BB_TYPES)
+        if F.get("bb_type" + sx) == "Other":
+            txt("bb_type_other" + sx, "Other broadband type")
+        pick("provider" + sx, "Provider", PROVIDERS)
+        st.caption("Expected speeds fill in from the package — run a speed test and enter what you measured.")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            num("exp_down" + sx, "Expected ↓ Mbps")
+        with c2:
+            num("exp_up" + sx, "Expected ↑ Mbps")
+        with c3:
+            num("meas_down" + sx, "Measured ↓ Mbps")
+        with c4:
+            num("meas_up" + sx, "Measured ↑ Mbps")
+        ed, md = F.get("exp_down" + sx), F.get("meas_down" + sx)
+        if ed and md:
+            pct = round(100 * md / ed)
+            up_txt = ""
+            eu, mu = F.get("exp_up" + sx), F.get("meas_up" + sx)
+            if eu and mu:
+                up_txt = f" · upload {round(100 * mu / eu)}% of expected"
+            render_html(chip(f"Download {pct}% of expected{up_txt}", "good" if pct >= 80 else "warn"))
+        c1, c2 = st.columns(2)
+        with c1:
+            pick("router" + sx, "Router make / model", ROUTERS)
+        with c2:
+            txt("router_serial" + sx, "Router serial number")
+        txt("wan_details" + sx, "WAN / ONT details", placeholder="e.g. ONT serial, PPPoE username, static IP")
+        c1, c2 = st.columns(2)
+        with c1:
+            txt("ssid" + sx, "Wi-Fi SSID / network name")
+        with c2:
+            txt("wifi_pw" + sx, "Wi-Fi password", type="password")
+        one("wifi_bands" + sx, "Wi-Fi band(s)", ["2.4 GHz", "5 GHz", "Both"])
+        one("guest_wifi" + sx, "Guest Wi-Fi enabled?", ["Yes", "No", "N/A"])
+        if F.get("guest_wifi" + sx) == "Yes":
+            c1, c2 = st.columns(2)
+            with c1:
+                txt("guest_ssid" + sx, "Guest SSID")
+            with c2:
+                txt("guest_pw" + sx, "Guest password", type="password")
+        multi("network_checks" + sx, "Network checks", NETWORK_CHECKS)
+        c1, c2 = st.columns(2)
+        with c1:
+            one("coverage_checked" + sx, "Wi-Fi coverage / signal checked", ["Yes", "No"])
+        with c2:
+            one("pw_handover" + sx, "Password handed over securely", ["Yes", "No"])
+        if i > 0 and i == count - 1:
+            if st.button(f"Remove line {i + 1}", icon=":material/delete:", key=wkey(f"bb_remove_{i}")):
+                for k in BB_KEYS:
+                    F.pop(k + sx, None)
+                    ss.pop(wkey(k + sx), None)
+                F["bb_count"] = count - 1
+                st.rerun()
 
 
 def set_now(n):
@@ -1152,8 +1251,16 @@ def jobs_screen():
                 big, small = title or cust, ""
             if person and person.lower() not in (big + " " + small).lower():
                 small = f"{small} · Contact: {person}" if small else f"Contact: {person}"
+            where = ", ".join(x for x in [(job.get("card_address") or job.get("address") or "").strip(),
+                                          (job.get("card_postcode") or job.get("postcode") or "").strip()] if x)
+            addr_html = ""
+            if where:
+                maps = "https://www.google.com/maps/search/?api=1&query=" + urllib.parse.quote(where)
+                addr_html = (f'<a class="job-addr" href="{esc(maps)}" target="_blank" rel="noopener">'
+                             f'{ICON_PIN}<span>{esc(where)}</span></a>')
             render_html(f'<div class="job-time">{esc(t)}</div><div class="job-title">{esc(big)}</div>'
-                        + (f'<div class="job-cust">{esc(small)}</div>' if small else '<div style="height:8px"></div>')
+                        + (f'<div class="job-cust">{esc(small)}</div>' if small else '')
+                        + addr_html + ('' if (small or addr_html) else '<div style="height:8px"></div>')
                         + chips)
             if st.button("Open job sheet" if not done else "Open again", key=f"open_{job['id']}",
                          type="primary" if not done else "secondary", icon=":material/assignment:", **FULL):
@@ -1416,65 +1523,14 @@ def sheet_screen():
             area("serials", "Equipment serials / MAC addresses", placeholder="One per line (optional)", height=80)
         n += 1
 
-    # ---------------- 04 broadband
+    # ---------------- 04 broadband (one card per line / site)
     if "Broadband & network" in covered:
-        with st.container(key="card-s4"):
-            section_header(f"{n:02d}", "Broadband & network")
-            # Package first — picking one fills in type, provider and expected speeds
-            opts = list(BB_PACKAGES)
-            cur = F.get("package")
-            if cur and cur not in opts:
-                opts.append(cur)
-            F["package"] = st.selectbox(
-                "Broadband package (from the pricebook)", opts, index=opts.index(cur) if cur in opts else None,
-                key=wkey("package"), placeholder="Choose the package, or type another",
-                accept_new_options=True, on_change=_package_chosen)
-            one("bb_type", "Broadband type", BB_TYPES)
-            if F.get("bb_type") == "Other":
-                txt("bb_type_other", "Other broadband type")
-            pick("provider", "Provider", PROVIDERS)
-            st.caption("Expected speeds fill in from the package — run a speed test and enter what you measured.")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                num("exp_down", "Expected ↓ Mbps")
-            with c2:
-                num("exp_up", "Expected ↑ Mbps")
-            with c3:
-                num("meas_down", "Measured ↓ Mbps")
-            with c4:
-                num("meas_up", "Measured ↑ Mbps")
-            if F.get("exp_down") and F.get("meas_down"):
-                pct = round(100 * F["meas_down"] / F["exp_down"])
-                tone = "good" if pct >= 80 else "warn"
-                up_txt = ""
-                if F.get("exp_up") and F.get("meas_up"):
-                    up_txt = f" · upload {round(100 * F['meas_up'] / F['exp_up'])}% of expected"
-                render_html(chip(f"Download {pct}% of expected{up_txt}", tone))
-            c1, c2 = st.columns(2)
-            with c1:
-                pick("router", "Router make / model", ROUTERS)
-            with c2:
-                txt("router_serial", "Router serial number")
-            txt("wan_details", "WAN / ONT details", placeholder="e.g. ONT serial, PPPoE username, static IP")
-            c1, c2 = st.columns(2)
-            with c1:
-                txt("ssid", "Wi-Fi SSID / network name")
-            with c2:
-                txt("wifi_pw", "Wi-Fi password", type="password")
-            one("wifi_bands", "Wi-Fi band(s)", ["2.4 GHz", "5 GHz", "Both"])
-            one("guest_wifi", "Guest Wi-Fi enabled?", ["Yes", "No", "N/A"])
-            if F.get("guest_wifi") == "Yes":
-                c1, c2 = st.columns(2)
-                with c1:
-                    txt("guest_ssid", "Guest SSID")
-                with c2:
-                    txt("guest_pw", "Guest password", type="password")
-            multi("network_checks", "Network checks", NETWORK_CHECKS)
-            c1, c2 = st.columns(2)
-            with c1:
-                one("coverage_checked", "Wi-Fi coverage / signal checked", ["Yes", "No"])
-            with c2:
-                one("pw_handover", "Password handed over securely", ["Yes", "No"])
+        count = max(1, int(F.get("bb_count") or 1))
+        for i in range(count):
+            broadband_line(i, count, n)
+        if st.button("Add another broadband line", icon=":material/add:", key=wkey("bb_add"), **FULL):
+            F["bb_count"] = count + 1
+            st.rerun()
         n += 1
 
     # ---------------- testing & sign-off
@@ -1511,7 +1567,7 @@ def sheet_screen():
         has_email = bool(re.match(r"[^@\s]+@[^@\s]+\.[^@\s]+$", (F.get("contact_email") or "").strip()))
         chk("email_customer", f"Email the customer a copy ({F.get('contact_email') or 'no email on file'})",
             disabled=not has_email)
-        if "Broadband & network" in covered and (F.get("wifi_pw") or F.get("guest_pw")):
+        if "Broadband & network" in covered and any(l.get("wifi_pw") or l.get("guest_pw") for l in bb_lines(F)):
             chk("include_pw_customer", "Include Wi-Fi passwords on the customer's copy",
                 help="The office copy and the Zoho copy never show Wi-Fi passwords.")
         chk("email_office", f"Email the office ({BRAND['office_email'] or 'not set up'})",
@@ -1591,6 +1647,7 @@ def _pdf_fields():
     if hm == "Other" and (F.get("handset_make_other") or "").strip():
         hm = f"Other – {F['handset_make_other'].strip()}"
     d["handset_models"] = hm or ""
+    d["bb_lines"] = bb_lines(F)
     return d
 
 
@@ -1615,9 +1672,12 @@ def note_text(d):
         if d.get("features"):
             lines.append("Features: " + ", ".join(d["features"]))
     if "Broadband & network" in cov:
-        lines += [f"Broadband: {d.get('bb_type') or '-'} {d.get('provider') or ''} {d.get('package') or ''} | "
-                  f"measured {d.get('meas_down') or '?'}/{d.get('meas_up') or '?'} Mbps | router {d.get('router') or '-'} "
-                  f"SN {d.get('router_serial') or '-'} | SSID {d.get('ssid') or '-'} (password not stored here)"]
+        bls = d.get("bb_lines") or [d]
+        for b in bls:
+            label = "Broadband" if len(bls) == 1 else f"Broadband line {b.get('line_no')}" + (f" ({b['bb_site']})" if b.get("bb_site") else "")
+            lines += [f"{label}: {b.get('bb_type') or '-'} {b.get('provider') or ''} {b.get('package') or ''} | "
+                      f"measured {b.get('meas_down') or '?'}/{b.get('meas_up') or '?'} Mbps | router {b.get('router') or '-'} "
+                      f"SN {b.get('router_serial') or '-'} | SSID {b.get('ssid') or '-'} (password not stored here)"]
     lines += ["", f"Outstanding: {d.get('outstanding') or 'None'}",
               f"Follow-up needed: {d.get('followup_needed') or '-'}   Billing: {d.get('billable') or '-'}",
               "Signed by customer: " + ("NOT SIGNED – " + (d.get("unavailable_reason") or "")
