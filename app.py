@@ -356,7 +356,7 @@ label:not([data-selected="true"]):has(input[role="switch"]) > div:first-of-type{
 .job-time{font-size:.8rem;font-weight:700;color:var(--accent-2);letter-spacing:.02em}
 .job-title{font-size:1.08rem;font-weight:700;color:var(--text);margin:4px 0 2px}
 .job-cust{font-size:.9rem;color:var(--muted);margin-bottom:6px}
-.job-addr{display:inline-flex;align-items:flex-start;gap:6px;font-size:.88rem;color:var(--accent-2)!important;text-decoration:none!important;margin:2px 0 10px;line-height:1.35}
+.job-addr{display:flex;width:fit-content;max-width:100%;align-items:flex-start;gap:6px;font-size:.88rem;color:var(--accent-2)!important;text-decoration:none!important;margin:2px 0 10px;line-height:1.35}
 .job-addr svg{flex-shrink:0;margin-top:2px}.job-addr:hover span{text-decoration:underline}
 .pe-note{background:rgba(56,214,245,.07);border:1px solid rgba(56,214,245,.25);border-radius:12px;padding:12px 14px;color:var(--text);font-size:.9rem;margin-bottom:14px}
 .pe-note b{color:var(--accent-2);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:4px}
