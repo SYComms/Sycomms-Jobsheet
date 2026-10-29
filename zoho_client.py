@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 UK = ZoneInfo("Europe/London")
-CODE_VERSION = "2026-10-27.10"  # bump when this file changes
+CODE_VERSION = "2026-10-29.1"  # bump when this file changes
 
 
 class ZohoError(Exception):
@@ -214,7 +214,42 @@ class ZohoClient:
         if hidden_deals:
             jobs = [j for j in jobs if not (j.get("module") == "Events" and
                                             any(_same_booking(j, d) for d in hidden_deals))]
+        self._fill_addresses(jobs)
         return sorted(jobs, key=lambda j: j.get("start") or "")
+
+    def _fill_addresses(self, jobs):
+        """Site address + postcode for each card: the meeting's Location if one was typed in,
+        otherwise the customer account's address (shipping first, then billing). One request
+        per 100 accounts."""
+        ids = []
+        for j in jobs:
+            if j.get("venue"):
+                j["card_address"], j["card_postcode"] = j["venue"], ""
+                continue
+            aid = j.get("card_account_id") or j.get("account_id")
+            if aid and not j.get("card_address"):
+                ids.append(str(aid))
+        ids = list(dict.fromkeys(ids))
+        addr = {}
+        for i in range(0, len(ids), 100):
+            try:
+                data = self._req("GET", "Accounts", params={
+                    "ids": ",".join(ids[i:i + 100]),
+                    "fields": "Shipping_Street,Shipping_City,Shipping_Code,Billing_Street,Billing_City,Billing_Code"})
+            except ZohoError:
+                return  # cards just show without an address
+            for a in data.get("data", []) or []:
+                for pre in ("Shipping", "Billing"):
+                    street = ", ".join(x.strip() for x in [a.get(f"{pre}_Street") or "", a.get(f"{pre}_City") or ""]
+                                       if x and x.strip())
+                    pc = (a.get(f"{pre}_Code") or "").strip()
+                    if street or pc:
+                        addr[str(a.get("id"))] = (street, pc)
+                        break
+        for j in jobs:
+            aid = str(j.get("card_account_id") or j.get("account_id") or "")
+            if aid in addr and not j.get("card_address"):
+                j["card_address"], j["card_postcode"] = addr[aid]
 
     def _list_module(self, day, module):
         f = self._fields(module)
@@ -298,6 +333,8 @@ class ZohoClient:
                 person, p_ref = _lookup_name(what), ("Contacts", _lookup_id(what))
             elif _lookup_id(what):
                 company = _lookup_name(what)  # account (or deal)
+                if mod not in ("deals", "deal", "potentials"):
+                    j["card_account_id"] = str(_lookup_id(what))
             if _lookup_id(r.get("Who_Id")):
                 person = person or _lookup_name(r.get("Who_Id"))
                 p_ref = p_ref or ("Contacts", _lookup_id(r.get("Who_Id")))
@@ -312,8 +349,9 @@ class ZohoClient:
             plan[str(j["id"])] = (company, person, p_ref)
 
         companies = {}
+        acc_of, lead_addr = {}, {}
         for mod_name, ids, field in (("Contacts", contact_ids, "Account_Name,Full_Name"),
-                                     ("Leads", lead_ids, "Company,Full_Name")):
+                                     ("Leads", lead_ids, "Company,Full_Name,Street,City,Zip_Code")):
             ids = list(ids)
             for i in range(0, len(ids), 100):
                 try:
@@ -324,11 +362,22 @@ class ZohoClient:
                     co = _lookup_name(r.get("Account_Name")) if mod_name == "Contacts" else (r.get("Company") or "")
                     if co:
                         companies[(mod_name, str(r.get("id")))] = co
+                    if mod_name == "Contacts" and _lookup_id(r.get("Account_Name")):
+                        acc_of[str(r.get("id"))] = str(_lookup_id(r.get("Account_Name")))
+                    if mod_name == "Leads":
+                        lead_addr[str(r.get("id"))] = (
+                            ", ".join(x.strip() for x in [r.get("Street") or "", r.get("City") or ""] if x and x.strip()),
+                            (r.get("Zip_Code") or "").strip())
 
         for j in todo:
             company, person, p_ref = plan.get(str(j["id"]), (None, None, None))
             if not company and p_ref:
                 company = companies.get((p_ref[0], str(p_ref[1])))
+            if p_ref and p_ref[0] == "Contacts" and not j.get("card_account_id"):
+                if acc_of.get(str(p_ref[1])):
+                    j["card_account_id"] = acc_of[str(p_ref[1])]
+            if p_ref and p_ref[0] == "Leads" and str(p_ref[1]) in lead_addr:
+                j["card_address"], j["card_postcode"] = lead_addr[str(p_ref[1])]
             if company:
                 j["for_name"] = company
             elif person and not j.get("for_name"):
@@ -366,6 +415,7 @@ class ZohoClient:
             "status": status,
             "engineer": eng,
             "for_name": _lookup_name(link) or (_lookup_name(rec.get("Who_Id")) if is_ev else ""),
+            "venue": (rec.get("Venue") or "").strip() if is_ev and isinstance(rec.get("Venue"), str) else "",
             "hydrated": False,
         }
         people = [eng.get("name", "")]
