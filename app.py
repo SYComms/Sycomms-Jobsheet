@@ -107,7 +107,12 @@ BRAND = {
     "email": secret("brand", "email", "hello@sycomms.co.uk"),
     "office_email": secret("brand", "office_email", ""),
     "signoff": secret("brand", "signoff", "Kind regards - Sy Communications"),
+    "support_email": secret("brand", "support_email", "support@sycomms.co.uk"),
+    # Google review page — the "#lrd=…,3" part opens Google's "write a review" box for SY Comms
+    "review_url": secret("brand", "review_url",
+                         "https://www.google.com/search?q=sycomms#lrd=0x487a9f872fc7dac5:0xf3f891e916966e23,3,,,,"),
 }
+SEND_FROM = secret("email", "send_from", "support@sycomms.co.uk")  # every job sheet email goes from here
 DEMO = bool(secret("app", "demo_mode", False)) or secret("zoho") is None
 
 
@@ -1573,20 +1578,10 @@ def sheet_screen():
         chk("email_office", f"Email the office ({BRAND['office_email'] or 'not set up'})",
             disabled=not BRAND["office_email"])
         if F.get("email_customer") or F.get("email_office"):
-            senders, sender_err = sender_options()
-            if senders:
-                emails = [x["email"] for x in senders]
-                if F.get("send_from") not in emails:
-                    F["send_from"] = default_sender(emails)
-                F["send_from"] = st.selectbox(
-                    "Send emails from", emails, index=emails.index(F["send_from"]), key=wkey("send_from"),
-                    format_func=lambda e: next((f"{x['user_name']} <{e}>" for x in senders
-                                                if x["email"] == e and x["user_name"] != e), e))
-                if not linked:
-                    st.caption(":orange[This job isn't linked to a Zoho account, so Zoho can't send it"
-                               + (" — it will go via the backup email instead.]" if secret("smtp") else ".]"))
-            elif sender_err:
-                st.caption(f":orange[Couldn't load Zoho sending addresses: {sender_err}]")
+            st.caption(f"Emails are sent from **{SEND_FROM}** through Zoho.")
+            if not linked:
+                st.caption(":orange[This job isn't linked to a Zoho account, so Zoho can't send it"
+                           + (" — it will go via the backup email instead.]" if secret("smtp") else ".]"))
         chk("save_zoho", "Save PDF + notes to the customer's Zoho account", disabled=not linked)
         appt = job.get("module") not in ("Demo", "Manual") and not DEMO
         if appt and ZohoClient.can_mark_complete_job(job):
@@ -1721,7 +1716,9 @@ def default_sender(emails):
 def deliver(to_email, to_name, subject, html, text, attachments, linked):
     """Send via Zoho (logged on the account). Falls back to the backup SMTP login if set up."""
     senders, _ = sender_options()
-    sender = next((x for x in senders if x["email"] == F.get("send_from")), senders[0] if senders else None)
+    sender = next((x for x in senders if x["email"].lower() == SEND_FROM.lower() and x.get("type") != "smtp"), None)
+    if sender is None:  # not listed (or the list couldn't be read): send as the organisation address anyway
+        sender = {"email": SEND_FROM, "user_name": f"{BRAND['name']} Support", "type": "org_email"}
     zoho_err = None
     if linked and sender and sender.get("type") != "smtp":
         try:
@@ -1768,6 +1765,24 @@ def send_email(to, subject, body_html, body_text, attachments):
             s.send_message(msg)
 
 
+def thanks_html():
+    review = ""
+    if BRAND["review_url"]:
+        review = (f'<a href="{esc(BRAND["review_url"])}" style="display:inline-block;margin-top:12px;background:#00b5a3;'
+                  'color:#ffffff;text-decoration:none;font-weight:bold;padding:10px 18px;border-radius:6px">'
+                  '&#9733; Leave us a Google review</a>')
+    return f"""
+      <div style="background:#1f1450;color:#ffffff;padding:18px 22px;border-left:4px solid #00b5a3;margin-top:4px">
+        <div style="font-size:16px;font-weight:bold">Thank you for choosing {esc(BRAND['name'])}</div>
+        <div style="font-size:13px;line-height:1.55;color:#d9d5f5;margin-top:6px">
+          We really appreciate your business. For anything you need from here on — questions, changes or
+          support — email <a href="mailto:{esc(BRAND['support_email'])}" style="color:#00b5a3;font-weight:bold">{esc(BRAND['support_email'])}</a>
+          or call <a href="tel:{esc(BRAND['phone'].replace(' ', ''))}" style="color:#00b5a3;font-weight:bold">{esc(BRAND['phone'])}</a>
+          and our team will pick it up.</div>
+        {('<div style="font-size:13px;color:#d9d5f5;margin-top:10px">Happy with the service? A quick Google review really helps us.</div>' + review) if review else ''}
+      </div>"""
+
+
 def customer_email(d):
     first = (d.get("cust_sign_name") or d.get("contact_name") or "").split(" ")[0] or "there"
     done = esc(d.get("work_done") or "").replace("\n", "<br>")
@@ -1786,15 +1801,19 @@ def customer_email(d):
         Your job sheet (ref <b>{esc(d.get('job_no'))}</b>) is attached for your records.</p>
         <p style="background:#f4f5fa;border-left:3px solid #00b5a3;padding:10px 12px"><b>Work carried out</b><br>{done}</p>
         {still}
-        <p>If anything isn't working as it should, just reply to this email or call us on {esc(BRAND['phone'])}.</p>
+        <p>If anything isn't working as it should, just reply to this email, contact our support team at
+        <a href="mailto:{esc(BRAND['support_email'])}" style="color:#00b5a3">{esc(BRAND['support_email'])}</a>
+        or call us on {esc(BRAND['phone'])}.</p>
         <p>{esc(BRAND['signoff'])}</p>
       </div>
+      {thanks_html()}
     </div>"""
     text = (f"Hi {first},\n\nThanks for having us on site today. {d.get('engineer')} has completed your "
             f"{(d.get('visit_type') or 'visit').lower()}. Your job sheet ({d.get('job_no')}) is attached.\n\n"
             f"Work carried out:\n{d.get('work_done')}\n\n"
             + (f"Still to do: {outstanding}\n\n" if outstanding else "")
-            + f"Any problems, reply to this email or call {BRAND['phone']}.\n\n{BRAND['signoff']}")
+            + f"Any problems, reply to this email, contact {BRAND['support_email']} or call {BRAND['phone']}.\n\n{BRAND['signoff']}"
+            + (f"\n\nEnjoyed working with us? Leave us a Google review: {BRAND['review_url']}" if BRAND["review_url"] else ""))
     return html, text
 
 
