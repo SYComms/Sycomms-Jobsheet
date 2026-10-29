@@ -99,6 +99,53 @@ def _sig_image(data_url, w=62 * mm, h=22 * mm):
         return _p("Signature unreadable", S_SMALL)
 
 
+def _thanks_card(brand):
+    """Branded thank-you panel: support contact + Google review link and QR code."""
+    support = brand.get("support_email") or "support@sycomms.co.uk"
+    review = brand.get("review_url") or ""
+    h = ParagraphStyle("th", fontName="Helvetica-Bold", fontSize=13, textColor=colors.white, leading=16)
+    b = ParagraphStyle("tb", fontName="Helvetica", fontSize=9, textColor=colors.HexColor("#d9d5f5"), leading=13)
+    lk = ParagraphStyle("tl", parent=b, textColor=ACCENT, fontName="Helvetica-Bold")
+    sup = escape(support)
+    text = [Paragraph(f"Thank you for choosing {escape(brand['name'])}", h), Spacer(1, 5),
+            Paragraph("We really appreciate your business. For anything you need from here on — questions, "
+                      "changes or support — please get in touch with our support team:", b), Spacer(1, 4),
+            Paragraph(f'<link href="mailto:{sup}">{sup}</link>' + (
+                f'&nbsp;&nbsp;<font color="#d9d5f5">|</font>&nbsp;&nbsp;'
+                f'<link href="tel:{escape(brand["phone"].replace(" ", ""))}">{escape(brand["phone"])}</link>'
+                if brand.get("phone") else ""), lk)]
+    if review:
+        text += [Spacer(1, 8), Paragraph("Happy with the service? A quick Google review really helps us:", b), Spacer(1, 3),
+                 Paragraph(f'<link href="{escape(review)}">Leave us a Google review &#187;</link>', lk)]
+    cells, widths = [text], [W]
+    if review:
+        try:
+            from reportlab.graphics.barcode import qr
+            from reportlab.graphics.shapes import Drawing
+            q = qr.QrCodeWidget(review, barFillColor=BRAND)
+            x1, y1, x2, y2 = q.getBounds()
+            size = 26 * mm
+            dr = Drawing(size, size, transform=[size / (x2 - x1), 0, 0, size / (y2 - y1), 0, 0])
+            dr.add(q)
+            qcell = Table([[dr], [Paragraph("Scan to review", ParagraphStyle(
+                "qc", fontName="Helvetica", fontSize=7, textColor=MUTED, alignment=1))]], colWidths=[30 * mm])
+            qcell.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.white), ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                                       ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+            cells, widths = [text, qcell], [W - 36 * mm, 36 * mm]
+        except Exception:
+            pass
+    t = Table([cells], colWidths=widths)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), BRAND),
+        ("LINEBEFORE", (0, 0), (0, -1), 4, ACCENT),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (-1, 0), (-1, 0), "CENTER" if len(cells) > 1 else "LEFT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 14), ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+        ("LEFTPADDING", (0, 0), (0, -1), 16), ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+    ]))
+    return KeepTogether([t])
+
+
 def build_pdf(F: dict, brand: dict, copy: str = "customer", photos=None) -> bytes:
     photos = photos or []
     buf = io.BytesIO()
@@ -276,12 +323,16 @@ def build_pdf(F: dict, brand: dict, copy: str = "customer", photos=None) -> byte
         pt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("TOPPADDING", (0, 0), (-1, -1), 6)]))
         story.append(pt)
 
+    # ---- thank-you card (customer copy only)
+    if copy == "customer":
+        story += [Spacer(1, 12), _thanks_card(brand)]
+
     def footer(canv, _doc):
         canv.saveState()
         canv.setFont("Helvetica", 7)
         canv.setFillColor(MUTED)
         canv.drawString(15 * mm, 9 * mm,
-                        f"{brand['name']}  |  {brand.get('phone', '')}  |  {brand.get('email', '')}  |  "
+                        f"{brand['name']}  |  {brand.get('phone', '')}  |  {brand.get('support_email') or brand.get('email', '')}  |  "
                         "Installation record — store Wi-Fi credentials securely")
         canv.drawRightString(A4[0] - 15 * mm, 9 * mm, f"Page {_doc.page}")
         canv.setStrokeColor(ACCENT)
